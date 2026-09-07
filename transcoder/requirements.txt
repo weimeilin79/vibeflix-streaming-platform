@@ -1,3 +1,7 @@
 click>=8.0.0
 google-cloud-storage>=2.0.0
 requests>=2.25.0
+# Vertex AI Gemini, used to screen video content before it is encoded
+# (moderation.py). Imported lazily, so a container built without it still
+# transcodes -- it just cannot screen.
+google-genai>=1.0.0

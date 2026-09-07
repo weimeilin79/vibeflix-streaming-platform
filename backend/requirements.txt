@@ -8,3 +8,7 @@ google-cloud-storage>=2.0.0
 google-auth>=2.20.0
 google-cloud-run>=0.9.0
 requests>=2.25.0
+# Model Armor screens the free text on a submission (moderation.py): title,
+# description, display name, ad copy. Imported lazily, like google-genai in the
+# transcoder, so a missing package degrades to "unscreened" rather than a crash.
+google-cloud-modelarmor>=0.1.0

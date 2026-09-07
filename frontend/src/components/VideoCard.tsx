@@ -1,8 +1,14 @@
-import { Play, Loader2, AlertTriangle, Clock } from "lucide-react";
+import { Play, Loader2, AlertTriangle, Clock, ShieldAlert } from "lucide-react";
 import { useTilt } from "../lib/useTilt";
 import { formatUploadTime } from "../lib/api";
 
-export type VideoStatus = "pending" | "processing" | "ready" | "failed";
+export type VideoStatus =
+  | "pending"
+  | "processing"
+  | "ready"
+  | "failed"
+  /** Rejected by content screening. Never transcoded, never published. */
+  | "blocked";
 
 export interface Video {
   id: string;
@@ -47,7 +53,8 @@ export const VideoCard = ({ video, onClick, index = 0 }: VideoCardProps) => {
   const isQueued = status === "pending";
   const isProcessing = status === "processing";
   const isFailed = status === "failed";
-  const isPlayable = !isQueued && !isProcessing && !isFailed;
+  const isBlocked = status === "blocked";
+  const isPlayable = !isQueued && !isProcessing && !isFailed && !isBlocked;
 
   const tilt = useTilt<HTMLDivElement>();
 
@@ -128,6 +135,24 @@ export const VideoCard = ({ video, onClick, index = 0 }: VideoCardProps) => {
             </span>
             <span className="text-[10px] text-white/60 font-medium px-6 text-center">
               This video could not be converted. Try uploading it again.
+            </span>
+          </div>
+        )}
+
+        {/* Screening rejected this submission. The card stays in the grid --
+            a submission that silently disappears reads as a bug to whoever
+            uploaded it, and the room can see something was held back. What it
+            deliberately does not say is what was in it, or who sent it: the
+            category, the reason, and the uploader's address are in the admin
+            console and nowhere a viewer can reach. */}
+        {isBlocked && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/70 backdrop-blur-[3px]">
+            <ShieldAlert className="w-7 h-7 text-rose-400" />
+            <span className="text-xs font-bold uppercase tracking-wider text-white/90">
+              Under review
+            </span>
+            <span className="text-[10px] text-white/60 font-medium px-6 text-center">
+              This submission was held back by content screening.
             </span>
           </div>
         )}

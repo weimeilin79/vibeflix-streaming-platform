@@ -120,7 +120,9 @@ gcloud services enable \
   cloudbuild.googleapis.com \
   secretmanager.googleapis.com \
   identitytoolkit.googleapis.com \
-  firebase.googleapis.com
+  firebase.googleapis.com \
+  aiplatform.googleapis.com \
+  modelarmor.googleapis.com
 
 # --- Firebase Authentication ------------------------------------------------
 # The admin console signs in with Google through Firebase. This block is
@@ -423,6 +425,60 @@ echo "-> Building and pushing container images..."
 gcloud builds submit --tag ${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO_NAME}/transcoder:latest ./transcoder
 gcloud builds submit --tag ${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO_NAME}/app:latest .
 
+# --- Content screening ------------------------------------------------------
+# Two services, two surfaces: Vertex (Gemini) screens the video inside the
+# transcoder job, Model Armor screens the text the submitter typed. Both run as
+# RUNTIME_SA, which the Cloud Run service and the job share.
+MODEL_ARMOR_TEMPLATE="${MODEL_ARMOR_TEMPLATE:-vibetube-text}"
+
+echo "-> Granting the runtime service account access to screening services..."
+gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+  --member="serviceAccount:${RUNTIME_SA}" \
+  --role="roles/aiplatform.user" \
+  --condition=None >/dev/null
+gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+  --member="serviceAccount:${RUNTIME_SA}" \
+  --role="roles/modelarmor.user" \
+  --condition=None >/dev/null
+
+# Gemini reads the raw upload out of GCS itself, and it does that as the Vertex
+# AI service agent rather than as RUNTIME_SA -- so the job having bucket access
+# is not enough. Granted explicitly rather than relying on the service agent's
+# default project roles, which on a freshly enabled project take a couple of
+# minutes to propagate: until they do, every scan fails PERMISSION_DENIED and
+# (fail-open being the default) the first uploads of a new deployment go
+# through unscreened.
+AIPLATFORM_SA="service-${PROJECT_NUMBER}@gcp-sa-aiplatform.iam.gserviceaccount.com"
+echo "   Granting the Vertex AI service agent read access to gs://${RAW_BUCKET}..."
+gcloud storage buckets add-iam-policy-binding "gs://${RAW_BUCKET}" \
+  --member="serviceAccount:${AIPLATFORM_SA}" \
+  --role="roles/storage.objectViewer" >/dev/null
+
+# Model Armor evaluates against a named template rather than inline settings,
+# so one has to exist before the first call. Created only when missing --
+# re-running must not overwrite thresholds an organiser has since tuned in the
+# console.
+#
+# Non-fatal on purpose. The gcloud surface for Model Armor is newer than the
+# rest of this script, and a flag that has since been renamed should not take
+# the whole deploy down: screening degrades to fail-open (or fail-closed, if
+# MODERATION_FAIL_CLOSED is set) and the message below says what to fix.
+if gcloud model-armor templates describe "${MODEL_ARMOR_TEMPLATE}" \
+     --location="${REGION}" >/dev/null 2>&1; then
+  echo "   Model Armor template ${MODEL_ARMOR_TEMPLATE} already exists."
+else
+  echo "   Creating Model Armor template ${MODEL_ARMOR_TEMPLATE}..."
+  if ! gcloud model-armor templates create "${MODEL_ARMOR_TEMPLATE}" \
+        --location="${REGION}" \
+        --rai-settings-filters='[{"filterType":"HATE_SPEECH","confidenceLevel":"MEDIUM_AND_ABOVE"},{"filterType":"HARASSMENT","confidenceLevel":"MEDIUM_AND_ABOVE"},{"filterType":"SEXUALLY_EXPLICIT","confidenceLevel":"MEDIUM_AND_ABOVE"},{"filterType":"DANGEROUS","confidenceLevel":"MEDIUM_AND_ABOVE"}]' \
+        >/dev/null 2>&1; then
+    echo "   WARNING: could not create the Model Armor template automatically."
+    echo "            Text screening will be skipped until it exists. Create it"
+    echo "            in the console (Security > Model Armor) or with:"
+    echo "              gcloud model-armor templates create ${MODEL_ARMOR_TEMPLATE} --location=${REGION}"
+  fi
+fi
+
 # 7. Deploy Cloud Run Transcoder Job
 echo "-> Deploying/Updating Cloud Run Job: ${JOB_NAME}..."
 # Run jobs replace if exists, else create
@@ -444,6 +500,12 @@ JOB_MEMORY="${JOB_MEMORY:-2Gi}"
 JOB_CPU="${JOB_CPU:-4}"
 # Below TRANSCODE_STALE_MINUTES, so a wedged job is killed by Cloud Run before
 # the stale sweep has to reclaim its slot.
+#
+# The content scan runs inside this budget and rides out 429s for up to five
+# minutes (MODERATION_RETRY_ATTEMPTS x MODERATION_RETRY_INTERVAL), so a room
+# hitting Vertex quota spends that before encoding starts. 20m still leaves
+# room for a full ladder; raise both this and TRANSCODE_STALE_MINUTES together
+# if the retry budget is raised.
 JOB_TIMEOUT="${JOB_TIMEOUT:-20m}"
 
 if gcloud run jobs describe ${JOB_NAME} --region=${REGION} >/dev/null 2>&1; then
@@ -484,7 +546,7 @@ gcloud run deploy ${SERVICE_NAME} \
   --add-cloudsql-instances=${PROJECT_ID}:${REGION}:${DB_INSTANCE_NAME} \
   --service-account=${RUNTIME_SA} \
   --set-secrets="DATABASE_URL=${SECRET_DATABASE_URL}:latest,TRANSCODER_SECRET_TOKEN=${SECRET_TRANSCODER_TOKEN}:latest,ADMIN_TOKEN=${SECRET_ADMIN_TOKEN}:latest" \
-  --set-env-vars="^|^RAW_VIDEOS_BUCKET=${RAW_BUCKET}|PUBLIC_STREAMS_BUCKET=${PUBLIC_BUCKET}|TRANSCODER_JOB_NAME=${JOB_NAME}|GCP_PROJECT=${PROJECT_ID}|GCP_LOCATION=${REGION}|DB_POOL_MAX=${DB_POOL_MAX}|MAX_UPLOAD_BYTES=${MAX_UPLOAD_BYTES}|MAX_CONCURRENT_TRANSCODES=${MAX_CONCURRENT_TRANSCODES}|MAX_UPLOADS_PER_EVENT=${MAX_UPLOADS_PER_EVENT}|MAX_CONCURRENT_VIEWERS=${MAX_CONCURRENT_VIEWERS}|PRESENCE_TTL_SECONDS=${PRESENCE_TTL_SECONDS}|TRANSCODE_STALE_MINUTES=${TRANSCODE_STALE_MINUTES}|FIREBASE_PROJECT_ID=${PROJECT_ID}|FIREBASE_API_KEY=${FIREBASE_API_KEY}|FIREBASE_AUTH_DOMAIN=${FIREBASE_AUTH_DOMAIN}|ADMIN_BOOTSTRAP_EMAILS=${ADMIN_BOOTSTRAP_EMAILS}"
+  --set-env-vars="^|^RAW_VIDEOS_BUCKET=${RAW_BUCKET}|PUBLIC_STREAMS_BUCKET=${PUBLIC_BUCKET}|TRANSCODER_JOB_NAME=${JOB_NAME}|GCP_PROJECT=${PROJECT_ID}|GCP_LOCATION=${REGION}|DB_POOL_MAX=${DB_POOL_MAX}|MAX_UPLOAD_BYTES=${MAX_UPLOAD_BYTES}|MAX_CONCURRENT_TRANSCODES=${MAX_CONCURRENT_TRANSCODES}|MAX_UPLOADS_PER_EVENT=${MAX_UPLOADS_PER_EVENT}|MAX_CONCURRENT_VIEWERS=${MAX_CONCURRENT_VIEWERS}|PRESENCE_TTL_SECONDS=${PRESENCE_TTL_SECONDS}|TRANSCODE_STALE_MINUTES=${TRANSCODE_STALE_MINUTES}|FIREBASE_PROJECT_ID=${PROJECT_ID}|FIREBASE_API_KEY=${FIREBASE_API_KEY}|FIREBASE_AUTH_DOMAIN=${FIREBASE_AUTH_DOMAIN}|ADMIN_BOOTSTRAP_EMAILS=${ADMIN_BOOTSTRAP_EMAILS}|MODERATION_ENABLED=${MODERATION_ENABLED:-true}|MODERATION_MODEL=${MODERATION_MODEL:-gemini-2.5-flash}|MODERATION_FAIL_CLOSED=${MODERATION_FAIL_CLOSED:-false}|MODEL_ARMOR_TEMPLATE=${MODEL_ARMOR_TEMPLATE}"
 
 # Get the service URL, which is now both the site and the API origin.
 SERVICE_URL=$(gcloud run services describe ${SERVICE_NAME} --region=${REGION} --format="value(status.url)")

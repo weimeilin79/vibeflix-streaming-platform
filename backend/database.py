@@ -27,6 +27,14 @@ STATUS_PROCESSING = "processing"
 STATUS_READY = "ready"
 STATUS_FAILED = "failed"
 
+# BLOCKED is terminal and distinct from FAILED on purpose. Both are unplayable,
+# but failed means "the machine could not convert this, try again" while
+# blocked means "screening rejected this" -- the card says something different,
+# and re-uploading the same file will reach the same verdict. A blocked row
+# never had its renditions written to the public bucket: the transcoder screens
+# before it encodes, so there is nothing published to retract.
+STATUS_BLOCKED = "blocked"
+
 # A job that dies without reporting back would otherwise hold its slot for
 # ever. Rows processing longer than this are treated as dead: the slot is
 # released and the row marked failed.
@@ -221,8 +229,9 @@ def insert_video(cursor, video: dict, event_code: str) -> str:
         INSERT INTO videos (
             id, eventId, title, description, thumbnailUrl, videoUrl,
             duration, createdAt, channelName, channelAvatar,
-            userId, status, processingStartedAt, source, projectId
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            userId, status, processingStartedAt, source, projectId,
+            uploaderIp
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """), (
         video_id,
         event_code,
@@ -241,6 +250,7 @@ def insert_video(cursor, video: dict, event_code: str) -> str:
         video.get("processingStartedAt"),
         video.get("source", SOURCE_SEED),
         video.get("projectId"),
+        video.get("uploaderIp"),
     ))
     return video_id
 
@@ -417,7 +427,14 @@ def replace_video(cursor, video_id: str, video: dict):
             channelAvatar = COALESCE(?, channelAvatar),
             createdAt = ?,
             status = ?,
-            processingStartedAt = NULL
+            processingStartedAt = NULL,
+            -- A replacement is a different file and gets a fresh verdict.
+            -- Carrying the old block over would leave a clean re-upload
+            -- permanently marked by whatever the first attempt contained.
+            moderationCategory = NULL,
+            moderationReason = NULL,
+            moderatedAt = NULL,
+            uploaderIp = COALESCE(?, uploaderIp)
         WHERE id = ?
     """), (
         video.get("title", "Untitled"),
@@ -429,8 +446,29 @@ def replace_video(cursor, video_id: str, video: dict):
         video.get("channelAvatar"),
         video.get("createdAt") or utc_now_iso(),
         video.get("status", STATUS_READY),
+        video.get("uploaderIp"),
         video_id,
     ))
+
+def mark_video_blocked(cursor, video_id: str, category: str, reason: str) -> None:
+    """Records a screening rejection against a video.
+
+    videoUrl is cleared alongside the status. The row still holds the raw
+    object name at this point -- the transcoder blocks before it uploads
+    anything -- and leaving that in place would keep a pointer to the rejected
+    file in a column the rest of the code treats as a playable URL.
+    """
+    cursor.execute(query_placeholder("""
+        UPDATE videos SET
+            status = ?,
+            moderationCategory = ?,
+            moderationReason = ?,
+            moderatedAt = ?,
+            videoUrl = '',
+            processingStartedAt = NULL
+        WHERE id = ?
+    """), (STATUS_BLOCKED, category or "unspecified", reason or "", utc_now_iso(), video_id))
+
 
 def sweep_stale_transcodes(cursor) -> int:
     """Fails rows whose transcoder died without reporting back.
@@ -690,12 +728,40 @@ _CANONICAL_FIELDS = (
     "id", "eventId", "title", "description", "thumbnailUrl", "videoUrl",
     "duration", "createdAt", "channelName", "channelAvatar", "userId", "status",
     "processingStartedAt", "source", "projectId",
+    "moderationCategory", "moderationReason", "moderatedAt", "uploaderIp",
     "code", "name", "uploadOpensAt", "uploadClosesAt", "adsClosesAt",
     "clientId", "lastSeenAt",
     "message", "imageUrl", "active", "updatedAt",
     "email", "addedAt", "addedBy",
 )
 _CANONICAL_BY_LOWER = {field.lower(): field for field in _CANONICAL_FIELDS}
+
+# Columns that must never reach an unauthenticated caller.
+#
+# The public video list is a `SELECT *` fed straight through normalize_row, so
+# a new column is published the moment it is added. uploaderIp in particular is
+# personal data and the whole point of recording it is that only an organiser
+# sees it; moderationReason is withheld because it describes what was in a
+# video the viewer is deliberately not being shown.
+PRIVATE_VIDEO_FIELDS = ("uploaderIp", "moderationCategory", "moderationReason")
+
+
+def public_video(row: dict) -> dict:
+    """One video as an anonymous viewer may see it.
+
+    Drops the admin-only columns, and blanks the media URLs on a blocked row:
+    the HLS output was never uploaded, but a locally-stored raw file would
+    otherwise still be fetchable by anyone reading the JSON.
+    """
+    video = {key: value for key, value in row.items() if key not in PRIVATE_VIDEO_FIELDS}
+    if video.get("status") == STATUS_BLOCKED:
+        video["videoUrl"] = ""
+        # Both images go too. Neither is screened -- only sniffed for a valid
+        # signature -- so a submission rejected for its video must not keep
+        # serving a poster frame or an avatar chosen by the same uploader.
+        video["thumbnailUrl"] = MISSING_THUMBNAIL
+        video["channelAvatar"] = MISSING_THUMBNAIL
+    return video
 
 def normalize_email(email) -> str:
     """Canonical form for an allowlist lookup.
@@ -857,7 +923,15 @@ VIDEOS_DDL = """
         processingStartedAt TEXT,
         -- Submitter's project identifier. Unique within a showroom, absent on
         -- seeded rows.
-        projectId TEXT
+        projectId TEXT,
+        -- Content screening. Set when status is 'blocked'; null otherwise.
+        moderationCategory TEXT,
+        moderationReason TEXT,
+        moderatedAt TEXT,
+        -- The submitter's IP, from X-Forwarded-For. Recorded so an organiser
+        -- can identify whoever put something in the room that has to be dealt
+        -- with. Never leaves the admin console -- see PRIVATE_VIDEO_FIELDS.
+        uploaderIp TEXT
     )
 """
 
@@ -951,6 +1025,12 @@ def init_db():
         # Distinguishes guest uploads from seeded content, so the per-showroom
         # upload cap counts only what guests actually contributed.
         _add_column_if_missing(cursor, "videos", "source", "TEXT")
+        # Content screening, added with the moderation pipeline. Existing rows
+        # keep NULLs: they predate screening and are not retroactively blocked.
+        _add_column_if_missing(cursor, "videos", "moderationCategory", "TEXT")
+        _add_column_if_missing(cursor, "videos", "moderationReason", "TEXT")
+        _add_column_if_missing(cursor, "videos", "moderatedAt", "TEXT")
+        _add_column_if_missing(cursor, "videos", "uploaderIp", "TEXT")
         conn.commit()
 
         # Rows predating the column are seed content by definition.

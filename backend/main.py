@@ -29,10 +29,12 @@ from database import (
     list_admin_users, add_admin_user, remove_admin_user, count_active_admins,
     normalize_email,
     STATUS_PENDING, STATUS_PROCESSING, STATUS_READY, STATUS_FAILED,
-    SOURCE_SEED, SOURCE_UPLOAD, MISSING_THUMBNAIL,
+    STATUS_BLOCKED, SOURCE_SEED, SOURCE_UPLOAD, MISSING_THUMBNAIL,
+    public_video, mark_video_blocked,
 )
 from auth import require_admin_ui, public_auth_config
 from events import public_event, upload_state, ad_submission_open
+from moderation import screen_submission, screen_text
 
 # Explicitly register HLS MIME types
 mimetypes.add_type("application/x-mpegURL", ".m3u8")
@@ -146,6 +148,12 @@ class TranscodeCompletePayload(BaseModel):
 class TranscodeFailedPayload(BaseModel):
     error: str = "Transcoding failed."
 
+class ModerationBlockedPayload(BaseModel):
+    # A short slug the organiser can scan a list by, e.g. "sexual", "violence".
+    category: str = "unspecified"
+    # One sentence, written for an organiser rather than the submitter.
+    reason: str = "Flagged by content screening."
+
 class SeedVideo(BaseModel):
     title: str
     videoUrl: str
@@ -215,7 +223,24 @@ def trigger_transcoder_job(video_id: str, unique_filename: str, event_code: str)
                         {"name": "OUTPUT_GCS_DIR", "value": output_dir_uri},
                         {"name": "VIDEO_ID", "value": video_id},
                         {"name": "BACKEND_URL", "value": backend_url},
-                        {"name": "TRANSCODER_SECRET_TOKEN", "value": secret_token}
+                        {"name": "TRANSCODER_SECRET_TOKEN", "value": secret_token},
+                        # Screening settings travel with the job rather than
+                        # being baked into its revision, so turning screening
+                        # off or changing models does not need a job redeploy.
+                        {"name": "MODERATION_ENABLED",
+                         "value": os.getenv("MODERATION_ENABLED", "true")},
+                        {"name": "MODERATION_MODEL",
+                         "value": os.getenv("MODERATION_MODEL", "gemini-2.5-flash")},
+                        {"name": "MODERATION_FAIL_CLOSED",
+                         "value": os.getenv("MODERATION_FAIL_CLOSED", "false")},
+                        # The job is deployed with no environment of its own --
+                        # everything it knows arrives in these overrides. Vertex
+                        # needs a project and a region to address, and without
+                        # them the scan reports "GCP_PROJECT is not set" and
+                        # fail-open publishes the video unscreened, which looks
+                        # exactly like a clean pass unless you read the logs.
+                        {"name": "GCP_PROJECT", "value": project},
+                        {"name": "GCP_LOCATION", "value": location},
                     ]
                 }
             ]
@@ -233,6 +258,26 @@ def trigger_transcoder_job(video_id: str, unique_filename: str, event_code: str)
     except Exception as e:
         print(f"Error triggering Cloud Run Job: {e}")
         return False
+
+def client_ip(request: Request) -> Optional[str]:
+    """The submitter's address, for the admin console's record.
+
+    Behind Cloud Run the socket peer is always the front end, so the real
+    client is the first entry in X-Forwarded-For -- Google's load balancer
+    appends to that header, and everything after the first hop is
+    infrastructure. The header is client-settable in principle, so this is a
+    lead for an organiser to follow, not an identity to rely on.
+
+    Worth knowing before reading anything into it: conference wifi is NAT'd and
+    mobile carriers use CGNAT, so a whole room can share one address.
+    """
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        first = forwarded.split(",")[0].strip()
+        if first:
+            return first[:64]
+    return getattr(request.client, "host", None)
+
 
 class UploadTooLarge(Exception):
     """Raised once a request body passes MAX_UPLOAD_BYTES."""
@@ -455,7 +500,8 @@ def ingest_upload(code: str, video_file: UploadFile, title: str, description: st
                   duration: str, display_name: str, source: str = SOURCE_UPLOAD,
                   project_id: Optional[str] = None,
                   avatar_file: Optional[UploadFile] = None,
-                  thumbnail_file: Optional[UploadFile] = None) -> str:
+                  thumbnail_file: Optional[UploadFile] = None,
+                  uploader_ip: Optional[str] = None) -> str:
     """Stores an upload, records it, and queues it for transcoding.
 
     The upload itself always succeeds once it passes validation: the row is
@@ -480,6 +526,21 @@ def ingest_upload(code: str, video_file: UploadFile, title: str, description: st
             status_code=413,
             detail=f"That video is too large. The limit is {limit_mb} MB.",
         )
+
+    # Text screening runs here, before anything is stored: the title and
+    # description are rendered in the grid and in the share card, so they need
+    # a verdict even though the video itself is screened later in the
+    # transcoder. Rejecting now costs no bucket write and gives the submitter
+    # an error they can act on, rather than a card that silently vanishes.
+    #
+    # Organiser seeding is exempt -- it is placed deliberately by someone
+    # holding the admin token, and screening it only spends quota.
+    if source == SOURCE_UPLOAD:
+        verdict = screen_submission(
+            title=title, description=description, name=display_name,
+        )
+        if not verdict["allowed"]:
+            raise HTTPException(status_code=422, detail=verdict["reason"])
 
     project_id = (project_id or "").strip() or None
 
@@ -545,6 +606,7 @@ def ingest_upload(code: str, video_file: UploadFile, title: str, description: st
         "createdAt": utc_now_iso(),
         "channelName": display_name.strip() or "Anonymous Vibe",
         "status": STATUS_PENDING if will_transcode else STATUS_READY,
+        "uploaderIp": uploader_ip,
     }
 
     with get_db_conn() as conn:
@@ -862,6 +924,12 @@ def admin_list_entries(code: str):
                 "channelName": v.get("channelName"), "status": v.get("status"),
                 "source": v.get("source"), "createdAt": v.get("createdAt"),
                 "thumbnailUrl": v.get("thumbnailUrl"),
+                # The only place these three are served. This endpoint is
+                # behind require_admin_ui; the public list drops them in
+                # public_video. Keep them out of any other response.
+                "uploaderIp": v.get("uploaderIp"),
+                "moderationCategory": v.get("moderationCategory"),
+                "moderationReason": v.get("moderationReason"),
             }
             for v in videos
         ],
@@ -979,6 +1047,12 @@ async def create_ad(
             detail=f"That message is too long. The limit is {MAX_AD_MESSAGE_CHARS} characters.",
         )
 
+    # An ad is the one thing on the site a viewer cannot skip past, so its copy
+    # is screened before it is stored. Cheap: one short string.
+    verdict = screen_text(text, label="ad message")
+    if not verdict["allowed"]:
+        raise HTTPException(status_code=422, detail=verdict["reason"])
+
     with get_db_conn() as conn:
         cursor = conn.cursor()
         event = load_event_or_404(cursor, code)
@@ -1064,11 +1138,15 @@ def get_event_videos(code: str):
         cursor.execute(query_placeholder(
             "SELECT * FROM videos WHERE eventId = ? ORDER BY createdAt DESC, id"
         ), (code,))
-        videos = [normalize_row(row) for row in cursor.fetchall()]
+        # public_video, not the raw row: this endpoint is unauthenticated, and
+        # a plain SELECT * would publish uploaderIp and the moderation notes
+        # along with everything else.
+        videos = [public_video(normalize_row(row)) for row in cursor.fetchall()]
         return JSONResponse(content=videos)
 
 @app.post("/api/events/{code}/videos")
 async def create_video(
+    request: Request,
     code: str,
     title: str = Form(...),
     description: str = Form(""),
@@ -1096,6 +1174,7 @@ async def create_video(
     video_id = ingest_upload(
         code, videoFile, title, description, duration, displayName,
         project_id=projectId, avatar_file=avatarFile, thumbnail_file=thumbnailFile,
+        uploader_ip=client_ip(request),
     )
     return {"id": video_id, "status": "success"}
 
@@ -1186,6 +1265,35 @@ def transcode_complete(
     # waiting for someone to upload again.
     drain_event_of(video_id)
     return {"status": "success"}
+
+@app.post("/api/videos/{video_id}/moderation-blocked")
+def moderation_blocked(
+    video_id: str,
+    payload: ModerationBlockedPayload,
+    token: str = Header(None, alias="X-Transcoder-Token")
+):
+    """Screening callback: the transcoder rejected this video's content.
+
+    Reached before any encoding happens, so there is nothing in the public
+    bucket to clean up -- the row simply becomes unplayable and the card says
+    the submission is under review. The reason and category are stored for the
+    admin console and deliberately not returned to viewers.
+
+    Not window-checked, for the same reason the other two callbacks are not: a
+    verdict that lands after the window closes still has to be recorded.
+    """
+    secret_token = os.getenv("TRANSCODER_SECRET_TOKEN")
+    if secret_token and token != secret_token:
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    with get_db_conn() as conn:
+        cursor = conn.cursor()
+        mark_video_blocked(cursor, video_id, payload.category, payload.reason)
+        conn.commit()
+    print(f"Video {video_id} blocked by screening: {payload.category}")
+    # The slot this job held is free again, exactly as on success or failure.
+    drain_event_of(video_id)
+    return {"status": "recorded"}
 
 @app.post("/api/videos/{video_id}/transcode-failed")
 def transcode_failed(
@@ -1382,6 +1490,12 @@ def _meta_for(path: str, request: Request) -> dict:
                     (video_id, code),
                 )
                 video = normalize_row(cursor.fetchone())
+                # A blocked submission falls through to the showroom's own
+                # card. Its title passed text screening, but building a share
+                # preview for something the room is deliberately not being
+                # shown hands out a link that looks like a video and is not.
+                if video and video.get("status") == STATUS_BLOCKED:
+                    video = None
                 if video:
                     meta.update({
                         "title": f"{video['title']} — {site}",

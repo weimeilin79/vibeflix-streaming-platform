@@ -22,6 +22,13 @@ export interface AdminVideo {
   source: string;
   createdAt: string;
   thumbnailUrl: string;
+  /**
+   * Admin-only fields. The public /api/events/{code}/videos response strips
+   * these; only the allowlisted entries endpoint returns them.
+   */
+  uploaderIp?: string | null;
+  moderationCategory?: string | null;
+  moderationReason?: string | null;
 }
 
 export interface AdminAd {

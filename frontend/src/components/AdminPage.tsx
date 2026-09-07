@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   Plus, Trash2, Lock, RefreshCw, ChevronRight, Megaphone, Film,
-  Sun, Moon, LogOut,
+  Sun, Moon, LogOut, ShieldAlert,
 } from "lucide-react";
 import { Logo } from "./Logo";
 import {
@@ -579,7 +579,24 @@ export const AdminPage = ({ theme, onToggleTheme }: AdminPageProps) => {
                               <span>· {video.channelName}</span>
                               <span>· {video.status}</span>
                               <span>· {formatUploadTime(video.createdAt)}</span>
+                              {/* Only rendered here. This endpoint is behind
+                                  the admin allowlist; the public video list
+                                  strips the address entirely. */}
+                              {video.uploaderIp && (
+                                <span className="font-mono">· {video.uploaderIp}</span>
+                              )}
                             </p>
+                            {video.status === "blocked" && (
+                              <p className="mt-1 text-[11px] text-rose-300 flex items-start gap-1.5">
+                                <ShieldAlert className="w-3 h-3 mt-0.5 shrink-0" />
+                                <span>
+                                  <span className="font-semibold uppercase tracking-wider">
+                                    {video.moderationCategory || "blocked"}
+                                  </span>
+                                  {video.moderationReason ? ` — ${video.moderationReason}` : ""}
+                                </span>
+                              </p>
+                            )}
                           </div>
                           <button
                             disabled={busy || !video.projectId}

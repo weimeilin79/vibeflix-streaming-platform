@@ -200,6 +200,7 @@ curl -sL -o /tmp/test-clip.mp4 https://media.w3.org/2010/05/sintel/trailer_hd.mp
 | Empty file | `400` | |
 | Upload window closed | `403` | Server clock, not the browser's |
 | Showroom at `MAX_UPLOADS_PER_EVENT` (300) | `409` | Total guest uploads, for the life of the showroom |
+| Title, description or name flagged by screening | `422` | Model Armor — see [Content screening](#content-screening) |
 
 All of these are checked **before** anything is written to disk or GCS, so a rejected upload
 costs no storage. The format sniff is a cheap gate, not full validation — the transcoder is
@@ -534,7 +535,7 @@ down instead of failing.
 
 #### States
 
-A video moves through four states, and the card in the grid shows each one:
+A video moves through five states, and the card in the grid shows each one:
 
 | Status | Meaning | What the viewer sees |
 |---|---|---|
@@ -542,6 +543,7 @@ A video moves through four states, and the card in the grid shows each one:
 | `processing` | A transcoder job holds it | **Processing** — spinner |
 | `ready` | Playable | The thumbnail, or **Preparing preview** until one exists |
 | `failed` | The job died, or never started | Warning overlay |
+| `blocked` | Rejected by content screening | **Under review** overlay, no reason given |
 
 Only `ready` is playable. Locally there is no transcoder, so uploads skip straight to `ready`
 and the raw file *is* the final artifact.
@@ -725,6 +727,177 @@ sqlite3 backend/vibetube.db \
 
 In the cloud this happens on its own: uploads start as `processing`, and the transcoder's
 callback flips them to `ready` (or `failed`) when the job finishes.
+
+---
+
+## Content screening
+
+Every guest submission is screened before the room sees it. Two surfaces, two services,
+because they are different problems:
+
+| Surface | Service | Where it runs | On a block |
+|---|---|---|---|
+| The video | **Gemini** on Vertex AI | `transcoder/moderation.py`, inside the transcode job | Status `blocked`, card reads **Under review** |
+| Title, description, uploader name | **Model Armor** | `backend/moderation.py`, inside the upload request | `422` with a message the submitter can act on |
+| Pre-roll ad copy | **Model Armor** | `backend/moderation.py`, on ad submission | `422` |
+
+Model Armor screens text, which is what it is for. It does **not** inspect video frames, so it
+is not what watches the video — that is Gemini, given the GCS object directly so it sees motion
+and audio rather than a handful of stills.
+
+### Where the video scan sits
+
+```
+upload -> pending -> processing -> [SCAN] -> transcode -> upload to public bucket -> ready
+                                      |
+                                      +-> blocked   (nothing encoded, nothing published)
+```
+
+The scan runs **before** the encode, not after. Two reasons, and the second is the important
+one:
+
+1. A rejected video costs no CPU. Screening is seconds; transcoding three renditions is
+   minutes.
+2. Nothing a blocked video produced ever reaches the public bucket. Screening after the upload
+   would publish the file and then try to retract it, which is a race against every viewer who
+   already has the URL.
+
+A blocked row keeps its place in the grid rather than vanishing — a submission that silently
+disappears reads as a bug to whoever uploaded it. What the card does **not** say is what was in
+the video or who sent it.
+
+### What the viewer sees, and what the organiser sees
+
+This is the deliberate split:
+
+| | Viewer (`GET /api/events/{code}/videos`) | Organiser (`/admin`) |
+|---|---|---|
+| Status | `blocked` | `blocked` |
+| Category and reason | **withheld** | shown |
+| Uploader's name | shown | shown |
+| Uploader's IP | **never sent** | shown |
+| `videoUrl` | blanked | — |
+
+The uploader's IP is recorded from `X-Forwarded-For` on upload and is served by exactly one
+endpoint, `GET /api/admin/events/{code}/entries`, which is behind the Google sign-in allowlist.
+`public_video()` in `backend/database.py` strips it — along with the moderation category and
+reason — from the public list. The public list is a `SELECT *`, so that projection is what
+stands between a new column and publishing it; add a sensitive column and add it to
+`PRIVATE_VIDEO_FIELDS` in the same commit.
+
+> **The IP is a lead, not an identity.** Conference wifi is NAT'd and mobile carriers use CGNAT,
+> so an entire room can share one address, and the header is client-settable in principle. It
+> is there to help an organiser find who to talk to, not to prove anything.
+>
+> It is also personal data under GDPR. That is why it is admin-only rather than displayed over
+> the blocked video: showing it on a screen the room is watching would publish a personal
+> identifier, including for a false positive.
+
+### Rate limits
+
+Twenty concurrent transcodes in one showroom all reaching Vertex at once will hit
+`RESOURCE_EXHAUSTED`. Waiting is the right response — the job is asynchronous and nobody is
+watching it — so a 429 is retried **10 times, 30 seconds apart** before the scan gives up. A
+fixed interval, not exponential backoff: quota refills on a fixed window, so backing off
+further only idles the job past the point the quota returned. Anything that is not a rate limit
+is raised immediately.
+
+That five-minute ceiling has to stay inside the job's `--task-timeout` (`JOB_TIMEOUT`, 20m in
+`deploy.sh`) with room left for the encode. Raise the retry budget and you raise both that and
+`TRANSCODE_STALE_MINUTES` with it.
+
+**The text scan gets a smaller budget on purpose** — 3 attempts, 5 seconds apart. It runs inside
+the upload request, where the job's 10 x 30s would blow through Cloud Run's 300s request timeout
+and hang the upload with no response. Raise `MODERATION_TEXT_RETRY_ATTEMPTS` only alongside that
+timeout.
+
+### When screening cannot reach a verdict
+
+Vertex down, quota exhausted past the retry budget, a malformed response, the client library
+missing. `MODERATION_FAIL_CLOSED` decides what happens, and it defaults to **false — fail-open**:
+the video is published unscreened and the reason is logged with `[moderation]`.
+
+That default is chosen for a live workshop. A Vertex outage silently blocking every upload in a
+room full of attendees is a worse failure than a few unscreened videos in a room the organisers
+are watching. Set it to `true` for an unattended deployment.
+
+One case is *not* treated as unavailable: an empty response from the model despite safety
+filters being off. The only thing that reliably produces it is content the platform itself
+refused to process, so it is recorded as a block with category `model_refused`.
+
+### Configuration
+
+All optional; the defaults are what `deploy.sh` ships.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `MODERATION_ENABLED` | `true` | Off switch. Local runs skip screening anyway — no `GCP_PROJECT` |
+| `MODERATION_MODEL` | `gemini-2.5-flash` | The model that watches the video |
+| `MODERATION_FAIL_CLOSED` | `false` | Block, rather than publish, when no verdict is available |
+| `MODERATION_RETRY_ATTEMPTS` | `10` | 429 retries for the video scan |
+| `MODERATION_RETRY_INTERVAL` | `30` | Seconds between them |
+| `MODERATION_TEXT_RETRY_ATTEMPTS` | `3` | 429 retries for the text scan (in-request) |
+| `MODERATION_TEXT_RETRY_INTERVAL` | `5` | Seconds between them |
+| `MODERATION_POLICY` | built-in | Replaces the video policy wholesale. Set on the **job**, not the service |
+| `MODEL_ARMOR_TEMPLATE` | `vibetube-text` | Model Armor template holding the text thresholds |
+
+The default video policy blocks sexual content, graphic violence, hate, illegal activity and
+shocking imagery, and explicitly does *not* block rough production quality, ordinary software
+content, or mild profanity — attendees ship unfinished demos and that is the point. To retune it
+for a particular event without rebuilding the image:
+
+```bash
+gcloud run jobs update transcoder-job --region us-central1 \
+  --update-env-vars "MODERATION_POLICY=<your policy text>"
+```
+
+The replacement still has to ask for `allowed`, `category` and `reason`; the response schema is
+what enforces the shape. Clear it with `--remove-env-vars MODERATION_POLICY`.
+
+`deploy.sh` enables `aiplatform.googleapis.com` and `modelarmor.googleapis.com`, grants the
+runtime service account `roles/aiplatform.user` and `roles/modelarmor.user`, creates the Model
+Armor template if it is missing, and grants the **Vertex AI service agent** read access to the
+raw-videos bucket.
+
+That last grant is not optional and is easy to miss. Gemini opens the GCS object *itself*, as
+`service-<PROJECT_NUMBER>@gcp-sa-aiplatform.iam.gserviceaccount.com` — not as the job's service
+account — so the transcoder having bucket access is irrelevant. Without it every scan returns:
+
+```
+403 PERMISSION_DENIED: ... does not have storage.objects.get access to the
+Google Cloud Storage object
+```
+
+which, with the default fail-open, means uploads publish unscreened and only the logs say so.
+On a freshly enabled project the service agent's own default roles take a couple of minutes to
+propagate, so the first scans after a first-time deploy can fail this way even with the grant in
+place. It self-corrects; it is worth knowing rather than debugging.
+
+A scan of a short demo video takes **around 5 seconds**, which is noise next to the encode it
+gates.
+
+> Template creation is **non-fatal**. The `gcloud model-armor` surface is newer than the rest of
+> that script, so if the flags have moved the deploy prints a warning and continues rather than
+> stopping; text screening then degrades to fail-open until the template exists. Create it in
+> the console under **Security > Model Armor**, or:
+>
+> ```bash
+> gcloud model-armor templates create vibetube-text --location=us-central1
+> ```
+
+### Locally
+
+Screening is inert. There is no `GCP_PROJECT`, so both modules log
+`[moderation] ... unavailable, allowing by policy` once per call and pass everything through.
+Nothing to configure, and no way to exercise a real verdict without deploying.
+
+To see the blocked card without a real scan, set the status by hand:
+
+```bash
+sqlite3 backend/vibetube.db \
+  "UPDATE videos SET status='blocked', moderationCategory='violence',
+   moderationReason='Test' WHERE projectId='your-project-id';"
+```
 
 ---
 
@@ -1134,6 +1307,18 @@ with your project's values filled in, when it finishes.
   (Memorystore) because in-memory counters do not work across Cloud Run instances.
 - **No CI/CD and no migration framework.** Schema changes are hand-rolled `ALTER TABLE`
   statements in `backend/database.py`.
+- **A blocked video cannot be released.** Screening's verdict is final: there is no "approve
+  anyway" in the admin console, and because the block happens before the encode there is no
+  transcoded output to publish even if there were. Clearing it means the submitter re-uploads
+  under the same `projectId`, which resets the moderation columns and re-runs the scan.
+- **Screening fails open by default.** `MODERATION_FAIL_CLOSED=false` means a Vertex outage
+  publishes videos unscreened, logged and nothing more. Deliberate for a staffed workshop; wrong
+  for an unattended deployment.
+- **Nothing screens the images.** Uploaded avatars and poster thumbnails are sniffed for a
+  valid image signature and never looked at again, so a video that passes screening can still
+  carry a harmful still. (A *blocked* row has both images blanked in `public_video()`, so this
+  is a gap on the videos that pass, not on the ones that fail.) Vision SafeSearch on the two
+  images at upload time would close it.
 
 ---
 
