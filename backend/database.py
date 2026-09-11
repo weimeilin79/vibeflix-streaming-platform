@@ -420,6 +420,19 @@ def list_ads(cursor, event_code: str) -> list:
     return [normalize_row(row) for row in cursor.fetchall()]
 
 
+def active_ad_projects(cursor, event_code: str) -> set:
+    """Projects in this showroom with an ad that would actually play.
+
+    One query for the whole grid rather than one per card: the video list is
+    polled by every viewer while anything is transcoding, and a per-video
+    lookup would multiply that by the number of cards.
+    """
+    cursor.execute(query_placeholder(
+        "SELECT projectId FROM ads WHERE eventId = ? AND active = 1"
+    ), (event_code,))
+    return {scalar(row) for row in cursor.fetchall() if scalar(row)}
+
+
 def upsert_ad(cursor, event_code: str, project_id: str, message: str,
               image_url: Optional[str]) -> str:
     """Creates or replaces the ad for a project.

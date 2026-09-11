@@ -1,4 +1,4 @@
-import { Play, Loader2, AlertTriangle, Clock, ShieldAlert } from "lucide-react";
+import { Play, Loader2, AlertTriangle, Clock, ShieldAlert, Megaphone } from "lucide-react";
 import { useTilt } from "../lib/useTilt";
 import { formatUploadTime } from "../lib/api";
 
@@ -30,6 +30,8 @@ export interface Video {
    * video and a seed clip is standing in.
    */
   source?: "seed" | "upload" | "placeholder";
+  /** Whether an active pre-roll ad plays before this video. */
+  hasAd?: boolean;
 }
 
 /**
@@ -171,11 +173,25 @@ export const VideoCard = ({ video, onClick, index = 0 }: VideoCardProps) => {
           </div>
         )}
 
-        {/* Video Duration Badge */}
+        {/* Bottom-right cluster: the ad marker sits beside the runtime rather
+            than on top of it, so neither has to move and the corner still
+            reads as one group. */}
         {isPlayable && (
-          <span className="absolute bottom-3 right-3 px-2 py-0.5 bg-black/75 backdrop-blur-sm text-xs font-semibold text-white tracking-wide rounded-md border border-hairline">
-            {video.duration}
-          </span>
+          <div className="absolute bottom-3 right-3 flex items-center gap-1.5">
+            {video.hasAd && (
+              <span
+                title="Plays an ad first"
+                aria-label="Plays an ad first"
+                className="flex items-center gap-1 px-1.5 py-0.5 bg-black/75 backdrop-blur-sm rounded-md border border-vibe-purple/50 text-[10px] font-bold tracking-wide text-vibe-purple"
+              >
+                <Megaphone className="w-2.5 h-2.5" />
+                AD
+              </span>
+            )}
+            <span className="px-2 py-0.5 bg-black/75 backdrop-blur-sm text-xs font-semibold text-white tracking-wide rounded-md border border-hairline">
+              {video.duration}
+            </span>
+          </div>
         )}
       </div>
 

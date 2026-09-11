@@ -24,6 +24,7 @@ from database import (
     sweep_stale_transcodes, count_by_status, count_uploads, claim_next_pending,
     touch_presence, count_present, find_by_project, replace_video,
     find_ad, list_ads, upsert_ad, set_ads_active, placeholder_video_urls,
+    active_ad_projects,
     load_seed_videos,
     create_event, list_events_with_counts, set_event_windows,
     list_credits, replace_credits, set_event_hashtag, set_event_social_wall,
@@ -1368,6 +1369,12 @@ def get_event_videos(code: str):
         # a plain SELECT * would publish uploaderIp and the moderation notes
         # along with everything else.
         videos = [public_video(normalize_row(row)) for row in cursor.fetchall()]
+        # Whether a card should show its ad marker. Computed here rather than
+        # stored: an ad can be added, replaced or switched off at any time, and
+        # a column would have to be kept in step with all three.
+        with_ads = active_ad_projects(cursor, code)
+        for video in videos:
+            video["hasAd"] = bool(video.get("projectId") in with_ads)
         return JSONResponse(content=videos)
 
 @app.post("/api/events/{code}/videos")
