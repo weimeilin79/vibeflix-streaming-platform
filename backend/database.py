@@ -1235,44 +1235,53 @@ def init_db():
         # videoUrl names one of the four retired clips. A guest upload, a
         # placeholder, or a row seeded from the current set is never matched,
         # so re-running this is a no-op.
-        # Defined by what the current set IS, not by a list of what it used to
-        # be: a seed row whose videoUrl names none of the current clips is
-        # stale, whatever it points at. Listing the old filenames instead was
-        # the first attempt and quietly missed half of them -- the retired
-        # clips were served from ".../sintel/trailer.mp4" and
-        # ".../bunny/trailer.mp4", which share a basename and match no
+        # Bring every already-seeded showroom in line with the current seed
+        # set -- both directions.
+        #
+        # Keyed off what the set IS rather than a list of what it used to be.
+        # Listing old filenames was the first attempt and quietly missed half
+        # of them: two retired clips were served from ".../sintel/trailer.mp4"
+        # and ".../bunny/trailer.mp4", which share a basename and match no
         # hyphenated name.
-        current_files = [s.get("seedFile") for s in load_seed_videos() if s.get("seedFile")]
-        stale_events = []
-        if current_files:
-            keep = " AND ".join("videoUrl NOT LIKE ?" for _ in current_files)
-            params = (SOURCE_SEED, *[f"%{name}%" for name in current_files])
+        #
+        # Removals alone were the second attempt, and that missed additions --
+        # a room holding every current clip but one looked perfectly aligned,
+        # so a newly added clip never reached any existing showroom.
+        #
+        # A room is realigned when its seed rows do not match the current set
+        # exactly, in either direction. Rooms with no seed rows at all are
+        # left alone: that is a room created with --no-seed, not a stale one.
+        current = [s for s in load_seed_videos() if s.get("seedFile")]
+        if current:
             cursor.execute(query_placeholder(
-                f"SELECT DISTINCT eventId FROM videos WHERE source = ? AND ({keep})"
-            ), params)
-            stale_events = [scalar(row) for row in cursor.fetchall()]
+                "SELECT eventId, videoUrl FROM videos WHERE source = ?"
+            ), (SOURCE_SEED,))
+            rows = [normalize_row(row) for row in cursor.fetchall()]
 
-        if stale_events:
-            cursor.execute(query_placeholder(
-                f"DELETE FROM videos WHERE source = ? AND ({keep})"
-            ), params)
-            conn.commit()
-            print(f"Removed retired seed videos from {len(stale_events)} showroom(s)")
+            seeded_rooms = {}
+            for row in rows:
+                seeded_rooms.setdefault(row["eventId"], []).append(row["videoUrl"] or "")
 
-            for event_code in stale_events:
+            for event_code, urls in seeded_rooms.items():
                 if not event_code:
                     continue
-                # Re-seed only a room left with no seed content at all. A room
-                # an organiser had already topped up with the new clips keeps
-                # what it has rather than gaining a second copy.
+                present = {
+                    seed["seedFile"] for seed in current
+                    if any(seed["seedFile"] in url for url in urls)
+                }
+                stale = [url for url in urls
+                         if not any(seed["seedFile"] in url for seed in current)]
+                if len(present) == len(current) and not stale:
+                    continue  # already aligned
+
                 cursor.execute(query_placeholder(
-                    "SELECT COUNT(*) FROM videos WHERE eventId = ? AND source = ?"
+                    "DELETE FROM videos WHERE eventId = ? AND source = ?"
                 ), (event_code, SOURCE_SEED))
-                if scalar(cursor.fetchone()):
-                    continue
                 count = seed_event(cursor, event_code)
                 conn.commit()
-                print(f"Re-seeded {event_code} with {count} current seed videos")
+                print(f"Realigned {event_code} to the current seed set "
+                      f"({count} videos; {len(stale)} retired, "
+                      f"{len(current) - len(present)} added)")
 
         # Seed the sandbox only when it is empty, so restarts never duplicate rows.
         cursor.execute(query_placeholder(

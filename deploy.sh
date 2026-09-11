@@ -331,7 +331,7 @@ fi
 # videos). Anything already present is skipped, so redeploys cost nothing.
 #
 # Whatever is here must match the seedFile values in backend/mockVideos.json.
-SEED_MEDIA_FILES="video01.mp4 video02.mp4 video03.mp4 video04.mp4 video05.mp4 video06.mp4"
+SEED_MEDIA_FILES="video01.mp4 video02.mp4 video03.mp4 video04.mp4 video05.mp4 video06.mp4 video07.mp4"
 
 echo "-> Checking seed media in gs://${PUBLIC_BUCKET}/seed/..."
 for NAME in ${SEED_MEDIA_FILES}; do

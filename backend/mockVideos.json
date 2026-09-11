@@ -64,5 +64,16 @@
     "channelName": "CloudHarbour",
     "channelAvatar": "/images/avatars/v6.jpg",
     "seedFile": "video06.mp4"
+  },
+  {
+    "id": "v7",
+    "title": "The Last Train Out",
+    "description": "Steam, a gloved hand, and about four seconds to say the thing. Shot in black and white because colour would have ruined it.",
+    "thumbnailUrl": "/images/thumbnails/seed07.jpg",
+    "videoUrl": "https://storage.googleapis.com/vibetube-streaming-platform-public-streams/seed/video07.mp4",
+    "duration": "0:10",
+    "channelName": "SilverReel",
+    "channelAvatar": "/images/avatars/v7.jpg",
+    "seedFile": "video07.mp4"
   }
 ]
