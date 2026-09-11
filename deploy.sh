@@ -324,39 +324,32 @@ fi
 # sample clips and silently broke half the seeded videos in every showroom.
 # They looked fine in the grid and failed only on play.
 #
-# Fetched from their original URLs on first deploy and cached in the bucket.
-# Skipped entirely once present, so redeploys cost nothing.
-SEED_MEDIA_ORIGINS="\
-sintel-trailer-hd.mp4 https://media.w3.org/2010/05/sintel/trailer_hd.mp4
-sintel-trailer.mp4 https://media.w3.org/2010/05/sintel/trailer.mp4
-bunny-trailer.mp4 https://media.w3.org/2010/05/bunny/trailer.mp4
-movie-300.mp4 https://media.w3.org/2010/05/video/movie_300.mp4"
+# The clips themselves are NOT in this repo -- 25 MB of binary in a repo that
+# gets cloned at every workshop is not worth it. They live in the bucket, and
+# are uploaded once from SEED_MEDIA_DIR (set it in .env only when adding or
+# replacing clips; an ordinary deploy needs it no more than it needs the
+# videos). Anything already present is skipped, so redeploys cost nothing.
+#
+# Whatever is here must match the seedFile values in backend/mockVideos.json.
+SEED_MEDIA_FILES="video01.mp4 video02.mp4 video03.mp4 video04.mp4 video05.mp4 video06.mp4"
 
 echo "-> Checking seed media in gs://${PUBLIC_BUCKET}/seed/..."
-SEED_TMP=""
-while read -r NAME ORIGIN_URL; do
-  [ -z "${NAME}" ] && continue
+for NAME in ${SEED_MEDIA_FILES}; do
   if gcloud storage objects describe "gs://${PUBLIC_BUCKET}/seed/${NAME}" >/dev/null 2>&1; then
     continue
   fi
-  if [ -z "${SEED_TMP}" ]; then
-    SEED_TMP="$(mktemp -d)"
-    trap 'rm -rf "${SEED_TMP}"' EXIT
+  if [ -z "${SEED_MEDIA_DIR:-}" ] || [ ! -f "${SEED_MEDIA_DIR}/${NAME}" ]; then
+    echo "   WARNING: ${NAME} is missing from the bucket and SEED_MEDIA_DIR"
+    echo "            does not provide it. Seeded showrooms will show a card"
+    echo "            whose video does not play until it is uploaded:"
+    echo "              gcloud storage cp ${NAME} gs://${PUBLIC_BUCKET}/seed/"
+    continue
   fi
-  echo "   Fetching ${NAME}..."
-  if curl -fsSL --max-time 180 -o "${SEED_TMP}/${NAME}" "${ORIGIN_URL}"; then
-    gcloud storage cp "${SEED_TMP}/${NAME}" "gs://${PUBLIC_BUCKET}/seed/${NAME}" \
-      --content-type=video/mp4 --cache-control="public, max-age=86400" >/dev/null
-    echo "   Stored ${NAME}."
-  else
-    # Not fatal: load_seed_videos falls back to the origin URL, so the
-    # showroom still works as long as that host is up.
-    echo "   WARNING: could not fetch ${NAME} from ${ORIGIN_URL}."
-    echo "            Seeded videos will fall back to that URL directly."
-  fi
-done <<EOF
-${SEED_MEDIA_ORIGINS}
-EOF
+  echo "   Uploading ${NAME} from ${SEED_MEDIA_DIR}..."
+  gcloud storage cp "${SEED_MEDIA_DIR}/${NAME}" "gs://${PUBLIC_BUCKET}/seed/${NAME}" \
+    --content-type=video/mp4 --cache-control="public, max-age=86400" >/dev/null
+  echo "   Stored ${NAME}."
+done
 
 # 4. Provision Cloud SQL PostgreSQL Instance
 #

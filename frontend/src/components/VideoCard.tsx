@@ -25,6 +25,11 @@ export interface Video {
   channelAvatar: string;
   eventId?: string;
   status?: VideoStatus;
+  /**
+   * Where the row came from. "placeholder" means an ad arrived before any
+   * video and a seed clip is standing in.
+   */
+  source?: "seed" | "upload" | "placeholder";
 }
 
 /**

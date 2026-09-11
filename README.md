@@ -696,7 +696,7 @@ curl -X POST http://localhost:8000/api/events/sandbox/seed \
   -d '{"videos":[{
         "title":"Opening Keynote",
         "videoUrl":"https://media.w3.org/2010/05/sintel/trailer_hd.mp4",
-        "thumbnailUrl":"/images/thumbnails/v1.jpg",
+        "thumbnailUrl":"/images/thumbnails/seed01.jpg",
         "duration":"12:00",
         "channelName":"Vibetube"
       }]}'
@@ -898,6 +898,116 @@ sqlite3 backend/vibetube.db \
   "UPDATE videos SET status='blocked', moderationCategory='violence',
    moderationReason='Test' WHERE projectId='your-project-id';"
 ```
+
+---
+
+## Credits and sharing
+
+Both are per-showroom and set in the admin console's event form. A room that
+sets neither behaves exactly as it did before they existed.
+
+### Credits
+
+Sponsor or attribution links, shown behind a **Credits** item in the room's
+left nav, directly above Lab 1. Each is a name and a URL, and a room can have
+up to 20.
+
+**The nav item exists only when the room has credits.** No credits, no menu
+entry — rather than an entry that opens an empty dialog. Credits arrive on the
+room's own `GET /api/events/{code}` response, so the item is correct on first
+paint instead of appearing a moment later.
+
+Links must start with `http://` or `https://`; `javascript:` and `data:` URLs
+are rejected server-side (`clean_credits` in `backend/main.py`). They render
+with `rel="noopener noreferrer"`.
+
+Editing a room without touching credits leaves them alone. Sending an empty
+list clears them — that distinction is why `credits` is nullable in the payload
+rather than defaulting to `[]`, which would make every unrelated event edit
+wipe them.
+
+### Social wall
+
+An optional external link — a Walls.io board, a hashtag wall, anything with a
+URL. Set per room in the event form; it renders as a **Social wall** button in
+the top bar beside Upload and opens in a new tab, so a viewer who follows it
+keeps their place in the grid and their presence heartbeat.
+
+Blank hides the button entirely, which is the state of every existing room.
+
+A missing scheme is filled in as `https://`, since `my.walls.io/abc` is what
+people paste and a bare host in an `href` reads as a relative path — the button
+would navigate inside the showroom instead of out to the wall. Any scheme that
+is not http(s) is rejected. Note that this means a bare `host:port` such as
+`localhost:3000/wall` is read as a scheme and refused; type the `http://` for
+those.
+
+> This links to a wall someone else hosts. Vibetube does not read, moderate or
+> store anything shown there — see the note in **Known gaps**.
+
+### Share hashtags
+
+One or more tokens per room, stored ready to post. Separate them with spaces or
+commas:
+
+```
+#DevFestNYC, BuildWithGemini @googlecloud
+  ->  #DevFestNYC #BuildWithGemini @googlecloud
+```
+
+A bare word gets `#`, because a missing hash is far likelier than an intended
+mention and guessing `@` would tag a stranger. `@` is preserved. Characters
+outside `[0-9A-Za-z_]` are dropped from each token, since they do not survive
+as a tag or handle anywhere. Deduplicated on sigil plus lowercased body, so
+`#Gemini` and `#gemini` collapse but `#gemini` and `@gemini` do not. Capped at
+10 tokens.
+
+The stored string carries its own sigils and is pasted verbatim — never
+re-prefix it with `#`, or a mention becomes `#@handle`.
+
+> **`@` mentions only link on X.** Pasting `@googlecloud` into LinkedIn's
+> composer renders as plain text; LinkedIn creates a real mention only when
+> someone types and picks from its autocomplete. Useful on X, cosmetic on
+> LinkedIn.
+
+It reaches:
+
+| Channel | How |
+|---|---|
+| X | the `text` parameter, with the standard tags |
+| Copy post | the pasteable block |
+| LinkedIn | the server-rendered Open Graph description |
+
+Three standard tags follow the room's own: `GoogleCloud`, `Gemini`, `Vibetube`.
+They are one array — `STANDARD_HASHTAGS` in `ShareButtons.tsx` — deduplicated
+case-insensitively against the room tag, so a room tagged `gemini` does not
+also get `#Gemini`. Set it to `[]` to post only the room's tag.
+
+### Captions, and the LinkedIn problem
+
+The share panel offers six captions and preselects the one the server would
+have chosen, so an untouched share behaves exactly as it did before the picker
+existed.
+
+**LinkedIn cannot be pre-filled.** It dropped support for `title`/`summary`
+parameters and builds its card from the page's own Open Graph tags, which the
+server renders before anyone has picked anything. No amount of client-side
+work changes that.
+
+So the panel hands over the text instead. A **Your post** block shows the
+chosen caption, the URL and the hashtags, with a Copy button; clicking
+**LinkedIn** copies that block *before* opening the composer, so posting is one
+paste. The copy happens inside the click's user gesture — doing it after
+`window.open` is refused by the browser.
+
+The block is a `readOnly` textarea rather than disabled text, so it stays
+selectable if the clipboard call is denied (which it is outside a secure
+context).
+
+> The caption lists are duplicated byte-identically between `ShareButtons.tsx`
+> and `share_blurb` in `backend/main.py`, along with the `pick`/`pick_variant`
+> hash, so the X post and the LinkedIn card agree. **Edit one and you must edit
+> the other**, or the two channels quietly diverge.
 
 ---
 
@@ -1314,6 +1424,9 @@ with your project's values filled in, when it finishes.
 - **Screening fails open by default.** `MODERATION_FAIL_CLOSED=false` means a Vertex outage
   publishes videos unscreened, logged and nothing more. Deliberate for a staffed workshop; wrong
   for an unattended deployment.
+- **The social wall is an unmoderated outbound link.** Vibetube renders a
+  button; everything behind it is hosted, moderated and controlled by whoever
+  runs that wall. The content screening in this repo does not extend to it.
 - **Nothing screens the images.** Uploaded avatars and poster thumbnails are sniffed for a
   valid image signature and never looked at again, so a video that passes screening can still
   carry a harmful still. (A *blocked* row has both images blanked in `public_video()`, so this

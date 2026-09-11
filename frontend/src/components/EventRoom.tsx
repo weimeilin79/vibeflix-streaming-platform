@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Film, Sun, Moon, Plus, LogOut, Lock, Clock } from "lucide-react";
+import { Film, Sun, Moon, Plus, LogOut, Lock, Clock, LayoutGrid } from "lucide-react";
 import { SearchBar } from "./SearchBar";
 import { VideoCard, Video } from "./VideoCard";
 import { VideoPlayerModal } from "./VideoPlayerModal";
@@ -9,6 +9,7 @@ import { Ambience } from "./Ambience";
 import { Logo } from "./Logo";
 import { Footer } from "./Footer";
 import { Sidebar } from "./Sidebar";
+import { CreditsModal } from "./CreditsModal";
 import {
   EventNotFoundError, ShowroomFullError, VibeEvent, EventSummary,
   fetchEvent, fetchEventVideos, fetchEvents, formatWindowTime, sendPresence,
@@ -41,6 +42,7 @@ export const EventRoom = ({ code, theme, onToggleTheme }: EventRoomProps) => {
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedVideo, setSelectedVideo] = useState<Video | null>(null);
   const [uploadOpen, setUploadOpen] = useState(false);
+  const [creditsOpen, setCreditsOpen] = useState(false);
 
   // A shared link carries ?v=<id>. Consumed once, after the first load
   // resolves, so arriving on a link opens that video rather than the grid.
@@ -188,7 +190,11 @@ export const EventRoom = ({ code, theme, onToggleTheme }: EventRoomProps) => {
           full width above the rail, as YouTube does. */}
       <header className="fixed top-0 inset-x-0 z-40 h-16 flex items-center gap-3 px-3 md:px-5 bg-stage/85 backdrop-blur-xl border-b border-hairline">
         <div className="flex items-center gap-2 flex-shrink-0">
-          <Sidebar code={code} />
+          <Sidebar
+            code={code}
+            credits={event?.credits}
+            onOpenCredits={() => setCreditsOpen(true)}
+          />
           <button
             onClick={() => navigate("/")}
             aria-label="Vibetube home"
@@ -212,6 +218,23 @@ export const EventRoom = ({ code, theme, onToggleTheme }: EventRoomProps) => {
         </div>
 
         <div className="flex items-center gap-1.5 flex-shrink-0">
+          {/* Only when the organiser has set one. Opens in a new tab rather
+              than navigating away: someone sent to the wall mid-showroom
+              loses their place in the grid and their presence heartbeat. */}
+          {event?.socialWallUrl && (
+            <a
+              href={event.socialWallUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-2 px-3 md:px-4 py-2 rounded-full bg-card hover:bg-card-hover border border-hairline text-fg-muted hover:text-fg transition-all duration-200 cursor-pointer"
+              aria-label="Open the social wall in a new tab"
+              title="Social wall"
+            >
+              <LayoutGrid className="w-5 h-5" />
+              <span className="hidden md:inline text-sm font-bold">Social wall</span>
+            </a>
+          )}
+
           {event?.uploadOpen && (
             <button
               onClick={() => setUploadOpen(true)}
@@ -338,6 +361,7 @@ export const EventRoom = ({ code, theme, onToggleTheme }: EventRoomProps) => {
         <VideoPlayerModal
           video={selectedVideo}
           eventCode={code}
+          shareHashtag={event?.shareHashtag}
           onClose={() => openVideo(null)}
         />
       )}
@@ -349,6 +373,14 @@ export const EventRoom = ({ code, theme, onToggleTheme }: EventRoomProps) => {
           onUploadSuccess={() => refresh(true)}
         />
       )}
+
+      {creditsOpen && event?.credits?.length ? (
+        <CreditsModal
+          credits={event.credits}
+          eventName={event.name}
+          onClose={() => setCreditsOpen(false)}
+        />
+      ) : null}
     </div>
   );
 };

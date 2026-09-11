@@ -164,7 +164,10 @@ export const UploadModal = ({ eventCode, onClose, onUploadSuccess }: UploadModal
       <div className="absolute inset-0" onClick={onClose} />
 
       {/* Form Container */}
-      <div className="relative w-full max-w-lg bg-[#0d0d12]/95 border border-hairline rounded-2xl p-6 shadow-2xl z-10 text-fg">
+      {/* bg-card rather than a fixed near-black, for the same reason as the
+          player: this panel sets `text-fg` on itself, which is #18181b in
+          light mode -- near-black type on a near-black panel. */}
+      <div className="relative w-full max-w-lg bg-card/95 border border-hairline rounded-2xl p-6 shadow-2xl z-10 text-fg">
         <button
           onClick={onClose}
           className="absolute top-4 right-4 text-fg-muted hover:text-fg cursor-pointer p-1.5 rounded-full hover:bg-overlay transition-colors"

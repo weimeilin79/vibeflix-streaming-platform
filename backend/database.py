@@ -55,6 +55,16 @@ MISSING_THUMBNAIL = "?"
 SOURCE_SEED = "seed"
 SOURCE_UPLOAD = "upload"
 
+# A stand-in created when an ad arrives for a project that has no video yet.
+# Points at existing seed media rather than transcoding anything, and is
+# replaced in place if the team later uploads for real.
+#
+# Deliberately not SOURCE_UPLOAD: a placeholder is not a guest contribution and
+# must not consume a slot against MAX_UPLOADS_PER_EVENT. See the cap check in
+# ingest_upload, which treats a placeholder as "no upload yet" so replacing one
+# is still counted.
+SOURCE_PLACEHOLDER = "placeholder"
+
 # How long a heartbeat keeps a viewer counted as present. Must comfortably
 # exceed the client's heartbeat interval, or a viewer flickers out between
 # beats and the room appears emptier than it is.
@@ -318,9 +328,67 @@ def delete_event(cursor, event_code: str) -> dict:
     cursor.execute(query_placeholder(
         "DELETE FROM event_presence WHERE eventId = ?"
     ), (event_code,))
+    cursor.execute(query_placeholder(
+        "DELETE FROM event_credits WHERE eventId = ?"
+    ), (event_code,))
     cursor.execute(query_placeholder("DELETE FROM events WHERE code = ?"), (event_code,))
 
     return {"videos": videos, "ads": ads}
+
+
+def new_credit_id() -> str:
+    return f"cr_{uuid.uuid4().hex[:12]}"
+
+
+def list_credits(cursor, event_code: str) -> list:
+    """A room's credit links, in display order."""
+    cursor.execute(query_placeholder("""
+        SELECT * FROM event_credits
+        WHERE eventId = ?
+        ORDER BY position, createdAt, id
+    """), (event_code,))
+    return [normalize_row(row) for row in cursor.fetchall()]
+
+
+def replace_credits(cursor, event_code: str, credits: list) -> int:
+    """Replaces a room's credits with the supplied list. Caller commits.
+
+    Whole-list replacement rather than per-row diffing: the admin form submits
+    the set it wants, and reconciling additions, removals and reordering
+    against stored ids is a lot of machinery for a handful of rows that only
+    an organiser ever touches.
+
+    Passing None means "leave them alone" -- distinct from passing [], which
+    clears them. Without that distinction, any event edit that did not include
+    credits would silently delete them.
+    """
+    if credits is None:
+        return -1
+
+    cursor.execute(query_placeholder(
+        "DELETE FROM event_credits WHERE eventId = ?"
+    ), (event_code,))
+
+    now = utc_now_iso()
+    for position, credit in enumerate(credits):
+        cursor.execute(query_placeholder("""
+            INSERT INTO event_credits (id, eventId, name, url, position, createdAt)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """), (new_credit_id(), event_code, credit["name"], credit["url"],
+               position, now))
+    return len(credits)
+
+
+def set_event_hashtag(cursor, event_code: str, hashtag):
+    cursor.execute(query_placeholder(
+        "UPDATE events SET shareHashtag = ? WHERE code = ?"
+    ), (hashtag, event_code))
+
+
+def set_event_social_wall(cursor, event_code: str, url):
+    cursor.execute(query_placeholder(
+        "UPDATE events SET socialWallUrl = ? WHERE code = ?"
+    ), (url, event_code))
 
 
 def set_event_windows(cursor, event_code: str, opens_at, closes_at, ads_closes_at):
@@ -427,6 +495,10 @@ def replace_video(cursor, video_id: str, video: dict):
             channelAvatar = COALESCE(?, channelAvatar),
             createdAt = ?,
             status = ?,
+            -- A real upload replacing a stand-in stops being one. Without
+            -- this the row keeps source='placeholder' and is never counted
+            -- against the showroom's upload cap.
+            source = ?,
             processingStartedAt = NULL,
             -- A replacement is a different file and gets a fresh verdict.
             -- Carrying the old block over would leave a clean re-upload
@@ -446,6 +518,7 @@ def replace_video(cursor, video_id: str, video: dict):
         video.get("channelAvatar"),
         video.get("createdAt") or utc_now_iso(),
         video.get("status", STATUS_READY),
+        video.get("source", SOURCE_UPLOAD),
         video.get("uploaderIp"),
         video_id,
     ))
@@ -493,6 +566,23 @@ def count_by_status(cursor, event_code: str, status: str) -> int:
         "SELECT COUNT(*) FROM videos WHERE eventId = ? AND status = ?"
     ), (event_code, status))
     return scalar(cursor.fetchone()) or 0
+
+
+def placeholder_video_urls(cursor, event_code: str) -> set:
+    """Seed media already standing in for a project in this showroom.
+
+    Used to hand each project a different default where possible -- a row of
+    identical stand-ins reads as a bug rather than as placeholders.
+    """
+    cursor.execute(query_placeholder(
+        "SELECT videoUrl FROM videos WHERE eventId = ? AND source = ?"
+    ), (event_code, SOURCE_PLACEHOLDER))
+    # scalar(), not row["videoUrl"]. Postgres folds unquoted identifiers, so
+    # this column comes back as "videourl" there and as "videoUrl" on SQLite --
+    # keying by name raised KeyError in the cloud and nowhere in local tests.
+    # Worse, it only fired from the second placeholder onward, because the
+    # first call iterates an empty result.
+    return {scalar(row) for row in cursor.fetchall()}
 
 
 def count_uploads(cursor, event_code: str) -> int:
@@ -730,6 +820,7 @@ _CANONICAL_FIELDS = (
     "processingStartedAt", "source", "projectId",
     "moderationCategory", "moderationReason", "moderatedAt", "uploaderIp",
     "code", "name", "uploadOpensAt", "uploadClosesAt", "adsClosesAt",
+    "shareHashtag", "socialWallUrl", "position", "url",
     "clientId", "lastSeenAt",
     "message", "imageUrl", "active", "updatedAt",
     "email", "addedAt", "addedBy",
@@ -952,6 +1043,26 @@ ADS_DDL = """
     )
 """
 
+# Sponsor / attribution links shown behind the Credits item in a room's nav.
+#
+# A table rather than a JSON column on events so ordering is explicit and a
+# single credit can be removed without rewriting the set -- the same reasoning
+# as ads, and the same lifecycle: meaningless without their event, so they are
+# deleted with it.
+EVENT_CREDITS_DDL = """
+    CREATE TABLE IF NOT EXISTS event_credits (
+        id TEXT PRIMARY KEY,
+        eventId TEXT NOT NULL,
+        name TEXT NOT NULL,
+        url TEXT NOT NULL,
+        -- Display order, 0-based. Set from the list's order in the admin form
+        -- rather than inferred from createdAt, so reordering does not require
+        -- deleting and re-adding.
+        position INTEGER DEFAULT 0,
+        createdAt TEXT
+    )
+"""
+
 # The admin allowlist. Signing in with Google proves who someone is; this
 # table is what decides whether that person may administer anything. Kept as a
 # table rather than an env var so access can be granted and revoked without a
@@ -997,6 +1108,7 @@ def init_db():
         cursor.execute(PRESENCE_DDL)
         cursor.execute(ADS_DDL)
         cursor.execute(ADMIN_USERS_DDL)
+        cursor.execute(EVENT_CREDITS_DDL)
         conn.commit()
 
         # Bootstrap admins, so a fresh deployment is administrable by someone.
@@ -1013,6 +1125,12 @@ def init_db():
         # Lets an organiser switch ads off once the event is over, without a
         # redeploy. Same shape and resolver as the upload window.
         _add_column_if_missing(cursor, "events", "adsClosesAt", "TEXT")
+        # Per-room share hashtag. NULL on existing rooms, which read as "no
+        # hashtag" -- so nothing about their share text changes.
+        _add_column_if_missing(cursor, "events", "shareHashtag", "TEXT")
+        # Optional link to an external social wall for the event. NULL hides
+        # the button entirely, which is the state of every existing room.
+        _add_column_if_missing(cursor, "events", "socialWallUrl", "TEXT")
         conn.commit()
 
         # Columns added after the original single-tenant schema shipped.
@@ -1092,6 +1210,56 @@ def init_db():
             "UPDATE videos SET status = ? WHERE status IS NULL"
         ), (STATUS_READY,))
         conn.commit()
+
+        # Retire the original sample clips.
+        #
+        # The seed set was replaced wholesale; rows already written into
+        # existing showrooms do not migrate themselves, and seeded rows carry
+        # no projectId, so the admin console cannot delete them either. This
+        # swaps them once.
+        #
+        # Scoped tightly on purpose: only rows whose source is 'seed' AND whose
+        # videoUrl names one of the four retired clips. A guest upload, a
+        # placeholder, or a row seeded from the current set is never matched,
+        # so re-running this is a no-op.
+        # Defined by what the current set IS, not by a list of what it used to
+        # be: a seed row whose videoUrl names none of the current clips is
+        # stale, whatever it points at. Listing the old filenames instead was
+        # the first attempt and quietly missed half of them -- the retired
+        # clips were served from ".../sintel/trailer.mp4" and
+        # ".../bunny/trailer.mp4", which share a basename and match no
+        # hyphenated name.
+        current_files = [s.get("seedFile") for s in load_seed_videos() if s.get("seedFile")]
+        stale_events = []
+        if current_files:
+            keep = " AND ".join("videoUrl NOT LIKE ?" for _ in current_files)
+            params = (SOURCE_SEED, *[f"%{name}%" for name in current_files])
+            cursor.execute(query_placeholder(
+                f"SELECT DISTINCT eventId FROM videos WHERE source = ? AND ({keep})"
+            ), params)
+            stale_events = [scalar(row) for row in cursor.fetchall()]
+
+        if stale_events:
+            cursor.execute(query_placeholder(
+                f"DELETE FROM videos WHERE source = ? AND ({keep})"
+            ), params)
+            conn.commit()
+            print(f"Removed retired seed videos from {len(stale_events)} showroom(s)")
+
+            for event_code in stale_events:
+                if not event_code:
+                    continue
+                # Re-seed only a room left with no seed content at all. A room
+                # an organiser had already topped up with the new clips keeps
+                # what it has rather than gaining a second copy.
+                cursor.execute(query_placeholder(
+                    "SELECT COUNT(*) FROM videos WHERE eventId = ? AND source = ?"
+                ), (event_code, SOURCE_SEED))
+                if scalar(cursor.fetchone()):
+                    continue
+                count = seed_event(cursor, event_code)
+                conn.commit()
+                print(f"Re-seeded {event_code} with {count} current seed videos")
 
         # Seed the sandbox only when it is empty, so restarts never duplicate rows.
         cursor.execute(query_placeholder(

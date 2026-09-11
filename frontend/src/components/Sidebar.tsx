@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import {
-  Home, FlaskConical, BookOpen, Menu, X, ExternalLink, Ticket,
+  Home, FlaskConical, BookOpen, Menu, X, ExternalLink, Ticket, Award,
 } from "lucide-react";
 import { navigate } from "../lib/router";
+import type { EventCredit } from "../lib/api";
 
 /**
  * CHANGE ME: where the lab and resource links point.
@@ -18,13 +19,27 @@ interface NavItem {
   icon: typeof Home;
   /** Grouped under a heading, with a divider above. */
   section?: string;
+  /** Runs instead of navigating. Used by Credits, which opens a dialog. */
+  onSelect?: () => void;
 }
 
 const NAV_ITEMS: NavItem[] = [
   { label: "Home", href: "/", icon: Home },
 
-  { label: "Lab 1", href: null, icon: FlaskConical, section: "Labs" },
-  { label: "Lab 2", href: null, icon: FlaskConical },
+  // Public codelab URLs. The authoring host (codelabs.devsite.corp.google.com)
+  // is reachable only inside Google's network, so linking it here would give
+  // every external attendee a dead end.
+  {
+    label: "Lab 1",
+    href: "https://codelabs.developers.google.com/codelabs/vibe-studio-lab/instructions#0",
+    icon: FlaskConical,
+    section: "Labs",
+  },
+  {
+    label: "Lab 2",
+    href: "https://codelabs.developers.google.com/vibetube-ads-agentic-data-engineering/instructions#0",
+    icon: FlaskConical,
+  },
   { label: "Lab 3", href: null, icon: FlaskConical },
 
   { label: "Resources", href: null, icon: BookOpen, section: "More" },
@@ -35,10 +50,27 @@ const isExternal = (href: string) => /^https?:\/\//i.test(href);
 interface SidebarProps {
   /** Current showroom code, pinned at the bottom for orientation. */
   code: string;
+  /** This room's credit links. Empty hides the Credits item entirely. */
+  credits?: EventCredit[];
+  /** Opens the credits dialog. */
+  onOpenCredits?: () => void;
 }
 
-export const Sidebar = ({ code }: SidebarProps) => {
+export const Sidebar = ({ code, credits = [], onOpenCredits }: SidebarProps) => {
   const [open, setOpen] = useState(false);
+
+  // Credits sits directly above Lab 1 and only exists when the organiser has
+  // set links for this room -- a nav entry that opens an empty dialog is worse
+  // than no entry. It is deliberately outside the "Labs" group: it is not a
+  // lab, so it carries the section heading that Lab 1 would otherwise start.
+  const items: NavItem[] = credits.length
+    ? [
+        NAV_ITEMS[0],
+        { label: "Credits", href: null, icon: Award, onSelect: onOpenCredits },
+        { ...NAV_ITEMS[1], section: "Labs" },
+        ...NAV_ITEMS.slice(2),
+      ]
+    : NAV_ITEMS;
 
   // Escape closes the mobile drawer; without it the only way out is the X,
   // which is easy to miss on a small screen.
@@ -62,6 +94,24 @@ export const Sidebar = ({ code }: SidebarProps) => {
     const labelClass = stacked
       ? "text-[10px] font-medium leading-none text-center"
       : "truncate";
+
+    if (item.onSelect) {
+      return (
+        <button
+          onClick={() => {
+            setOpen(false);
+            item.onSelect?.();
+          }}
+          title={item.label}
+          className={`${base} text-fg-muted hover:text-fg hover:bg-overlay cursor-pointer ${
+            stacked ? "" : "text-left"
+          }`}
+        >
+          <Icon className={`${iconSize} flex-shrink-0`} />
+          <span className={labelClass}>{item.label}</span>
+        </button>
+      );
+    }
 
     if (!item.href) {
       return (
@@ -119,7 +169,7 @@ export const Sidebar = ({ code }: SidebarProps) => {
       className={`flex flex-col h-full ${stacked ? "px-1.5 py-3 gap-0.5" : "px-3 py-6 gap-1"}`}
       aria-label="Main"
     >
-      {NAV_ITEMS.map((item, index) => (
+      {items.map((item, index) => (
         <div key={`${item.label}-${index}`}>
           {item.section && (
             stacked ? (

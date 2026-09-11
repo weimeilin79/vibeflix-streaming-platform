@@ -10,12 +10,15 @@ interface VideoPlayerModalProps {
   video: Video;
   /** Showroom the video belongs to, needed to build its shareable link. */
   eventCode: string;
+  /** The room's share hashtag, if the organiser set one. */
+  shareHashtag?: string;
   onClose: () => void;
 }
 
 export const VideoPlayerModal = ({
   video,
   eventCode,
+  shareHashtag,
   onClose
 }: VideoPlayerModalProps) => {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -138,7 +141,12 @@ export const VideoPlayerModal = ({
       <div className="absolute inset-0" onClick={onClose} />
 
       {/* Modal Container */}
-      <div className="relative w-full max-w-4xl bg-[#0d0d12]/90 border border-hairline rounded-2xl overflow-hidden shadow-2xl z-10 flex flex-col max-h-[90vh]">
+      {/* bg-card, not a fixed near-black. The panel used to be #0d0d12 in both
+          themes while everything written on it used `text-fg`, which in light
+          mode is #18181b -- near-black type on a near-black panel. The video
+          frame below stays black regardless, which is what actually matters
+          for watching; the surrounding chrome follows the theme. */}
+      <div className="relative w-full max-w-4xl bg-card/95 border border-hairline rounded-2xl overflow-hidden shadow-2xl z-10 flex flex-col max-h-[90vh]">
         {/* Close Button */}
         <button
           onClick={onClose}
@@ -215,6 +223,18 @@ export const VideoPlayerModal = ({
                 title={video.title}
                 authorName={video.channelName}
                 seed={video.id}
+                hashtag={shareHashtag}
+                // A placeholder is an ad with no video of its own; a real
+                // upload that also has an ad gets three captions from each
+                // lab. `ad` is resolved before this renders, so the kind is
+                // settled by the time the share panel is on screen.
+                kind={
+                  video.source === "placeholder"
+                    ? "ad"
+                    : ad
+                      ? "both"
+                      : "video"
+                }
               />
             </div>
 

@@ -5,7 +5,8 @@ import {
 } from "lucide-react";
 import { Logo } from "./Logo";
 import {
-  AdminEvent, AdminEntries, EventInput, AdminIdentity, NotAuthorizedError,
+  AdminEvent, AdminEntries, EventInput, EventCreditInput, AdminIdentity,
+  NotAuthorizedError,
   listEvents, listEntries, createEvent, updateEvent, closeEvent, deleteEvent,
   deleteVideo, deleteAd, localInputToUtc, utcToLocalInput, fetchMe,
 } from "../lib/admin";
@@ -32,13 +33,17 @@ import { AdminUsers } from "./AdminUsers";
 // the rule is visible before the click rather than after it.
 const SANDBOX_CODE = "sandbox";
 
-const EMPTY_FORM: EventInput & { code: string } = {
+const EMPTY_FORM: EventInput & { code: string; credits: EventCreditInput[] } = {
   name: "",
   code: "",
   uploadOpensAt: "",
   uploadClosesAt: "",
   adsClosesAt: "",
   seed: true,
+  shareHashtag: "",
+  socialWallUrl: "",
+  // One blank row so "add a credit" needs no click to get started.
+  credits: [{ name: "", url: "" }],
 };
 
 interface AdminPageProps {
@@ -173,6 +178,11 @@ export const AdminPage = ({ theme, onToggleTheme }: AdminPageProps) => {
       uploadClosesAt: localInputToUtc(form.uploadClosesAt || ""),
       adsClosesAt: localInputToUtc(form.adsClosesAt || ""),
       seed: form.seed,
+      shareHashtag: form.shareHashtag || "",
+      socialWallUrl: form.socialWallUrl || "",
+      // Blank rows are dropped here as well as server-side, so the trailing
+      // empty row the form always shows never becomes a stored credit.
+      credits: form.credits.filter((c) => c.name.trim() || c.url.trim()),
     };
     if (editing) {
       run(() => updateEvent(editing, payload), `Updated ${editing}`).then(() => {
@@ -195,6 +205,10 @@ export const AdminPage = ({ theme, onToggleTheme }: AdminPageProps) => {
       uploadClosesAt: utcToLocalInput(event.uploadClosesAt),
       adsClosesAt: utcToLocalInput(event.adsClosesAt),
       seed: false,
+      shareHashtag: event.shareHashtag || "",
+      socialWallUrl: event.socialWallUrl || "",
+      // Always leave a blank row at the end to type into.
+      credits: [...(event.credits || []), { name: "", url: "" }],
     });
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
@@ -365,6 +379,96 @@ export const AdminPage = ({ theme, onToggleTheme }: AdminPageProps) => {
               Times are entered in your local timezone and stored as UTC. Leave
               blank for no limit.
             </p>
+
+            <div>
+              <label className={label}>Share hashtags</label>
+              <input
+                type="text"
+                value={form.shareHashtag || ""}
+                onChange={(e) => setForm({ ...form, shareHashtag: e.target.value })}
+                placeholder="#DevFestNYC #BuildWithGemini @googlecloud"
+                className={field}
+              />
+              <p className="text-[10px] text-fg-muted/70 mt-1">
+                Added to posts shared from this showroom. Separate several with
+                spaces or commas; "#" is assumed if you leave it off, and "@"
+                is kept as a mention. Up to 10. Blank for none.
+              </p>
+            </div>
+
+            <div>
+              <label className={label}>Social wall link</label>
+              <input
+                type="text"
+                value={form.socialWallUrl || ""}
+                onChange={(e) => setForm({ ...form, socialWallUrl: e.target.value })}
+                placeholder="my.walls.io/abc123"
+                className={field}
+              />
+              <p className="text-[10px] text-fg-muted/70 mt-1">
+                Adds a Social wall button beside Upload, opening in a new tab.
+                https:// is filled in if you leave it off. Blank hides it.
+              </p>
+            </div>
+
+            {/* Credits. An empty list hides the Credits item in the room's nav
+                entirely, so a room with nothing set looks exactly as it does
+                today. The trailing blank row is always present to type into
+                and is discarded on submit. */}
+            <div>
+              <label className={label}>Credits</label>
+              <div className="flex flex-col gap-1.5">
+                {form.credits.map((credit, index) => (
+                  <div key={index} className="flex items-center gap-1.5">
+                    <input
+                      type="text"
+                      value={credit.name}
+                      placeholder="Name"
+                      onChange={(e) => {
+                        const next = [...form.credits];
+                        next[index] = { ...next[index], name: e.target.value };
+                        // Typing in the last row grows a new one, so adding
+                        // several in a row never needs a button.
+                        if (index === next.length - 1 && e.target.value.trim()) {
+                          next.push({ name: "", url: "" });
+                        }
+                        setForm({ ...form, credits: next });
+                      }}
+                      className={`${field} flex-[2]`}
+                    />
+                    <input
+                      type="url"
+                      value={credit.url}
+                      placeholder="https://..."
+                      onChange={(e) => {
+                        const next = [...form.credits];
+                        next[index] = { ...next[index], url: e.target.value };
+                        setForm({ ...form, credits: next });
+                      }}
+                      className={`${field} flex-[3]`}
+                    />
+                    <button
+                      type="button"
+                      aria-label="Remove credit"
+                      onClick={() => {
+                        const next = form.credits.filter((_, i) => i !== index);
+                        setForm({
+                          ...form,
+                          credits: next.length ? next : [{ name: "", url: "" }],
+                        });
+                      }}
+                      className="p-2 rounded-lg text-fg-muted hover:text-rose-400 hover:bg-overlay transition-colors cursor-pointer"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <p className="text-[10px] text-fg-muted/70 mt-1">
+                Shown behind a Credits item in this showroom's menu. Links must
+                start with http:// or https://. No credits, no menu item.
+              </p>
+            </div>
 
             {!editing && (
               <label className="flex items-center gap-2 text-xs text-fg-muted">

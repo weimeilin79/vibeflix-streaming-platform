@@ -1,5 +1,6 @@
 import html
 import os
+import random
 import re
 import secrets
 import shutil
@@ -22,14 +23,17 @@ from database import (
     new_video_id, normalize_row, scalar, utc_now_iso, DatabaseBusy,
     sweep_stale_transcodes, count_by_status, count_uploads, claim_next_pending,
     touch_presence, count_present, find_by_project, replace_video,
-    find_ad, list_ads, upsert_ad, set_ads_active,
+    find_ad, list_ads, upsert_ad, set_ads_active, placeholder_video_urls,
+    load_seed_videos,
     create_event, list_events_with_counts, set_event_windows,
+    list_credits, replace_credits, set_event_hashtag, set_event_social_wall,
     delete_video_by_project, delete_ad_by_project, delete_event,
     SANDBOX_EVENT_CODE,
     list_admin_users, add_admin_user, remove_admin_user, count_active_admins,
     normalize_email,
     STATUS_PENDING, STATUS_PROCESSING, STATUS_READY, STATUS_FAILED,
-    STATUS_BLOCKED, SOURCE_SEED, SOURCE_UPLOAD, MISSING_THUMBNAIL,
+    STATUS_BLOCKED, SOURCE_SEED, SOURCE_UPLOAD, SOURCE_PLACEHOLDER,
+    MISSING_THUMBNAIL,
     public_video, mark_video_blocked,
 )
 from auth import require_admin_ui, public_auth_config
@@ -277,6 +281,58 @@ def client_ip(request: Request) -> Optional[str]:
         if first:
             return first[:64]
     return getattr(request.client, "host", None)
+
+
+def create_placeholder_video(cursor, code: str, project_id: str) -> str:
+    """Adopts a seed clip as a stand-in for a project that has no video yet.
+
+    Points at seed media that is already in the public bucket and already
+    playable, so nothing is encoded, uploaded or queued -- a placeholder costs
+    one row and no transcoder job.
+
+    Prefers a clip not already standing in for another project in this room.
+    Identical stand-ins across a grid read as a bug rather than as
+    placeholders; falling back to a rotation once every clip is taken keeps
+    that preference from becoming a hard failure in a busy showroom.
+    """
+    seeds = load_seed_videos()
+    if not seeds:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"No video found for project '{project_id}', and no seed "
+                "content is configured to stand in for it."
+            ),
+        )
+
+    used = placeholder_video_urls(cursor, code)
+    unused = [s for s in seeds if s.get("videoUrl") not in used]
+    # Deterministic once every clip is in use, so the rotation is even rather
+    # than randomly clumping on one clip.
+    chosen = random.choice(unused) if unused else seeds[len(used) % len(seeds)]
+
+    video_id = new_video_id()
+    insert_video(cursor, {
+        "id": video_id,
+        # Project id first so an organiser scanning the grid can see at a
+        # glance which submission a card belongs to, then the clip actually
+        # standing in, so the card matches what plays.
+        "title": f"{project_id} : {chosen.get('title', 'Sample clip')}",
+        "description": (
+            "This project submitted an ad before its video. A sample clip is "
+            "standing in; it is replaced automatically when the team uploads."
+        ),
+        "thumbnailUrl": chosen.get("thumbnailUrl", MISSING_THUMBNAIL),
+        "videoUrl": chosen.get("videoUrl", ""),
+        "duration": chosen.get("duration", "0:00"),
+        "createdAt": utc_now_iso(),
+        "channelName": "Ad submission",
+        "channelAvatar": chosen.get("channelAvatar", "?"),
+        "status": STATUS_READY,
+        "source": SOURCE_PLACEHOLDER,
+        "projectId": project_id,
+    }, code)
+    return video_id
 
 
 class UploadTooLarge(Exception):
@@ -561,6 +617,8 @@ def ingest_upload(code: str, video_file: UploadFile, title: str, description: st
         with get_db_conn() as conn:
             cursor = conn.cursor()
             existing = find_by_project(cursor, code, project_id)
+            # A placeholder is always READY and has no job behind it, so this
+            # guard cannot apply to one.
             if existing and existing.get("status") in (STATUS_PENDING, STATUS_PROCESSING):
                 # Replacing now would leave the in-flight job to call back
                 # against a row it no longer describes, overwriting the new
@@ -576,7 +634,15 @@ def ingest_upload(code: str, video_file: UploadFile, title: str, description: st
     # Organiser seeding is exempt: the cap exists to bound guest contributions,
     # and someone with the admin token can already do as they like. A
     # replacement is exempt too -- it consumes no additional slot.
-    if source == SOURCE_UPLOAD and existing is None:
+    #
+    # A placeholder is the exception to that exception. It was created by an ad
+    # submission, not an upload, so count_uploads never counted it; treating
+    # the replacement as exempt would let every ad submission mint one upload
+    # that sits outside the cap entirely.
+    replacing_placeholder = bool(
+        existing and existing.get("source") == SOURCE_PLACEHOLDER
+    )
+    if source == SOURCE_UPLOAD and (existing is None or replacing_placeholder):
         with get_db_conn() as conn:
             cursor = conn.cursor()
             if count_uploads(cursor, code) >= MAX_UPLOADS_PER_EVENT:
@@ -615,7 +681,9 @@ def ingest_upload(code: str, video_file: UploadFile, title: str, description: st
             video_id = existing["id"]
             # None, not "?", so COALESCE keeps the previous picture when this
             # re-upload did not include one.
-            replace_video(cursor, video_id, {**fields, "channelAvatar": avatar_url})
+            replace_video(cursor, video_id, {
+                **fields, "channelAvatar": avatar_url, "source": source,
+            })
             print(f"Replaced video {video_id} for project '{project_id}' in {code}")
         else:
             video_id = new_video_id()
@@ -677,7 +745,12 @@ def read_event(code: str):
     with get_db_conn() as conn:
         cursor = conn.cursor()
         event = load_event_or_404(cursor, code)
-        return JSONResponse(content=public_event(event))
+        # Credits come back on the room fetch the client already makes, so the
+        # Credits nav item can decide whether to exist on first paint rather
+        # than appearing a moment later.
+        return JSONResponse(
+            content=public_event(event, credits=list_credits(cursor, code))
+        )
 
 class PresencePayload(BaseModel):
     clientId: str
@@ -733,6 +806,11 @@ def event_presence(code: str, payload: PresencePayload):
 # per request, so revoking access takes effect immediately rather than when
 # the caller's ID token expires.
 
+class CreditInput(BaseModel):
+    name: str
+    url: str
+
+
 class AdminEventPayload(BaseModel):
     name: str
     code: Optional[str] = None
@@ -741,6 +819,135 @@ class AdminEventPayload(BaseModel):
     uploadClosesAt: Optional[str] = None
     adsClosesAt: Optional[str] = None
     seed: bool = True
+    shareHashtag: Optional[str] = None
+    socialWallUrl: Optional[str] = None
+    # None means "leave the existing credits alone"; [] means "clear them".
+    # An edit that omits the field must not wipe what is already there.
+    credits: Optional[List[CreditInput]] = None
+
+
+MAX_CREDITS_PER_EVENT = 20
+MAX_CREDIT_NAME_CHARS = 60
+
+
+# Tokens a room may attach to shared posts. Kept small: a wall of tags reads
+# as spam, and LinkedIn demotes posts that look like one.
+MAX_SHARE_TAGS = 10
+MAX_TAG_BODY_CHARS = 60
+
+
+def clean_hashtag(raw: Optional[str]) -> Optional[str]:
+    """Normalises the tags an organiser types into a ready-to-post string.
+
+    Accepts hashtags and @mentions, separated by spaces or commas, in any
+    mixture: "#VibeSummit26, GoogleCloud @googlecloud" stores
+    "#VibeSummit26 #GoogleCloud @googlecloud".
+
+    Each token keeps its sigil, defaulting to "#" when none is given -- a bare
+    word is far more often a missing "#" than an intended mention, and turning
+    it into an @ would tag a stranger. The sigil is kept rather than stripped
+    because the two are not interchangeable downstream: this string is now
+    pasted into post text verbatim.
+
+    Everything outside [0-9A-Za-z_] is dropped from a token's body, since it
+    does not survive as a tag or a handle on any platform.
+
+    Despite the name, this column holds one or more tokens. The name is kept
+    to avoid renaming a live column for cosmetic reasons.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return None
+
+    tokens = []
+    seen = set()
+    for piece in re.split(r"[\s,]+", text):
+        if not piece:
+            continue
+        sigil = "@" if piece.startswith("@") else "#"
+        body = re.sub(r"[^0-9A-Za-z_]", "", piece)[:MAX_TAG_BODY_CHARS]
+        if not body:
+            continue
+        # "#gemini" and "@gemini" are different things, so the sigil is part
+        # of the identity; case is not.
+        key = f"{sigil}{body.lower()}"
+        if key in seen:
+            continue
+        seen.add(key)
+        tokens.append(f"{sigil}{body}")
+        if len(tokens) >= MAX_SHARE_TAGS:
+            break
+
+    return " ".join(tokens) or None
+
+
+def clean_wall_url(raw: Optional[str]) -> Optional[str]:
+    """Normalises the social-wall link an organiser types.
+
+    A scheme is added when one is missing, because "my.walls.io/abc" is what
+    people paste and a bare host in an href is read as a relative path -- the
+    button would navigate inside the showroom instead of out to the wall.
+    https, not http: every wall host worth linking serves TLS, and silently
+    downgrading someone's link is worse than failing.
+
+    Anything with a scheme that is not http(s) is rejected, same as credits.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return None
+
+    # Any scheme at all, not just one followed by "//" -- `javascript:alert(1)`
+    # has a scheme but no slashes, and testing for "://" let it through to be
+    # rewritten as `https://javascript:alert(1)`. Detect the colon form, then
+    # accept only http(s).
+    if re.match(r"^[a-z][a-z0-9+.-]*:", text, re.I):
+        if not re.match(r"^https?://", text, re.I):
+            raise HTTPException(
+                status_code=400,
+                detail="The social wall link must be an http:// or https:// address.",
+            )
+    else:
+        text = f"https://{text}"
+    return text[:500]
+
+
+def clean_credits(credits: Optional[List[CreditInput]]) -> Optional[list]:
+    """Validates operator-supplied credit links.
+
+    Rows with neither a name nor a URL are dropped rather than rejected --
+    the admin form always submits its trailing empty row, and erroring on it
+    would make adding a credit feel broken.
+    """
+    if credits is None:
+        return None
+
+    cleaned = []
+    for credit in credits:
+        name = (credit.name or "").strip()
+        url = (credit.url or "").strip()
+        if not name and not url:
+            continue
+        if not name or not url:
+            raise HTTPException(
+                status_code=400,
+                detail="A credit needs both a name and a link.",
+            )
+        # Only http(s). A javascript: or data: URL here would be rendered as a
+        # link in every room, and "the admin typed it" is not a reason to hand
+        # that to every viewer.
+        if not re.match(r"^https?://", url, re.I):
+            raise HTTPException(
+                status_code=400,
+                detail=f"Credit '{name}' must link to an http:// or https:// address.",
+            )
+        cleaned.append({"name": name[:MAX_CREDIT_NAME_CHARS], "url": url})
+
+    if len(cleaned) > MAX_CREDITS_PER_EVENT:
+        raise HTTPException(
+            status_code=400,
+            detail=f"A showroom can have at most {MAX_CREDITS_PER_EVENT} credits.",
+        )
+    return cleaned
 
 
 class AdminUserPayload(BaseModel):
@@ -837,8 +1044,13 @@ def admin_list_events():
     with get_db_conn() as conn:
         cursor = conn.cursor()
         events = list_events_with_counts(cursor)
+        # Credits are read per event rather than joined: this list is a
+        # handful of rooms on an admin-only page, and the join would have to
+        # aggregate to avoid multiplying the counts already computed above.
+        credits = {e["code"]: list_credits(cursor, e["code"]) for e in events}
     return JSONResponse(content=[
-        {**public_event(event), "videoCount": event["videoCount"], "adCount": event["adCount"]}
+        {**public_event(event, credits=credits.get(event["code"])),
+         "videoCount": event["videoCount"], "adCount": event["adCount"]}
         for event in events
     ])
 
@@ -861,10 +1073,17 @@ def admin_create_event(payload: AdminEventPayload):
         seeded = create_event(cursor, code, name, opens, closes, with_seed=payload.seed)
         if payload.adsClosesAt:
             set_event_windows(cursor, code, opens, closes, payload.adsClosesAt)
+        set_event_hashtag(cursor, code, clean_hashtag(payload.shareHashtag))
+        set_event_social_wall(cursor, code, clean_wall_url(payload.socialWallUrl))
+        replace_credits(cursor, code, clean_credits(payload.credits))
         conn.commit()
         event = get_event(cursor, code)
+        credits = list_credits(cursor, code)
 
-    return JSONResponse(content={**public_event(event), "seeded": seeded}, status_code=201)
+    return JSONResponse(
+        content={**public_event(event, credits=credits), "seeded": seeded},
+        status_code=201,
+    )
 
 
 @app.patch("/api/admin/events/{code}", dependencies=[Depends(require_admin_ui)])
@@ -882,10 +1101,16 @@ def admin_update_event(code: str, payload: AdminEventPayload):
             cursor.execute(query_placeholder(
                 "UPDATE events SET name = ? WHERE code = ?"
             ), (payload.name.strip(), code))
+        set_event_hashtag(cursor, code, clean_hashtag(payload.shareHashtag))
+        set_event_social_wall(cursor, code, clean_wall_url(payload.socialWallUrl))
+        # None here means the caller did not send the field, so the stored
+        # credits stay put -- see replace_credits.
+        replace_credits(cursor, code, clean_credits(payload.credits))
         conn.commit()
         event = get_event(cursor, code)
+        credits = list_credits(cursor, code)
 
-    return JSONResponse(content=public_event(event))
+    return JSONResponse(content=public_event(event, credits=credits))
 
 
 @app.post("/api/admin/events/{code}/close", dependencies=[Depends(require_admin_ui)])
@@ -902,7 +1127,8 @@ def admin_close_event(code: str):
         set_event_windows(cursor, code, event.get("uploadOpensAt"), now, now)
         conn.commit()
         event = get_event(cursor, code)
-    return JSONResponse(content=public_event(event))
+        credits = list_credits(cursor, code)
+    return JSONResponse(content=public_event(event, credits=credits))
 
 
 @app.get("/api/admin/events/{code}/entries", dependencies=[Depends(require_admin_ui)])
@@ -1067,14 +1293,14 @@ async def create_ad(
                 ),
             )
 
+        # An ad for a project with no video used to be a 409. It now adopts
+        # one of the seed clips as a stand-in, so the ad has something to play
+        # in front of and the team can upload later without resubmitting it.
         if not find_by_project(cursor, code, project_id):
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    f"No video found for project '{project_id}' in this showroom. "
-                    "Upload the video before its ad."
-                ),
-            )
+            placeholder_id = create_placeholder_video(cursor, code, project_id)
+            conn.commit()
+            print(f"Created placeholder {placeholder_id} for project "
+                  f"'{project_id}' in {code}")
 
     image_url = store_optional_image(imageFile, "ad image")
 
@@ -1417,7 +1643,7 @@ def pick_variant(seed: str, count: int) -> int:
 
 def share_blurb(author: Optional[str], title: str, event_name: str,
                 description: Optional[str] = None, limit: int = 300,
-                seed: str = "") -> str:
+                seed: str = "", hashtag: Optional[str] = None) -> str:
     """The line that appears on a shared card.
 
     Deliberately playful and in the uploader's voice: this is what someone's
@@ -1436,6 +1662,20 @@ def share_blurb(author: Optional[str], title: str, event_name: str,
         blurb = f"{blurb} {extra}"
     elif event_name:
         blurb = f"{blurb} Now showing in {event_name}."
+    # The room's tags, if it has any. Appended before truncation so a long
+    # description loses its tail rather than the tags -- those are the part the
+    # organiser chose deliberately.
+    #
+    # Used verbatim: the stored string already carries each token's sigil, so
+    # re-adding "#" here would produce "##VibeSummit" and would mangle any
+    # @mention into "#@handle".
+    tags = (hashtag or "").strip()
+    if tags:
+        room = limit - len(tags) - 1
+        if len(blurb) > room:
+            blurb = blurb[:room].rsplit(" ", 1)[0].rstrip(",.;:") + "…"
+        return f"{blurb} {tags}"
+
     # Crawlers truncate long descriptions anyway; doing it here keeps the cut
     # at a word boundary rather than mid-sentence.
     if len(blurb) > limit:
@@ -1505,6 +1745,7 @@ def _meta_for(path: str, request: Request) -> dict:
                             event["name"],
                             video.get("description"),
                             seed=video["id"],
+                            hashtag=event.get("shareHashtag"),
                         ),
                         "image": _absolute(video.get("thumbnailUrl"), request)
                                  or meta["image"],
@@ -1512,9 +1753,11 @@ def _meta_for(path: str, request: Request) -> dict:
                     })
                     return meta
 
+            room_line = f"Watch what people are sharing in {event['name']}."
+            tags = (event.get("shareHashtag") or "").strip()
             meta.update({
                 "title": f"{event['name']} — {site}",
-                "description": f"Watch what people are sharing in {event['name']}.",
+                "description": f"{room_line} {tags}" if tags else room_line,
             })
     except Exception as e:
         # Never let preview metadata break page delivery.

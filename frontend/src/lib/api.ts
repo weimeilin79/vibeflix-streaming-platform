@@ -12,6 +12,26 @@ export interface VibeEvent {
   uploadOpen: boolean;
   uploadState: "open" | "pending" | "closed";
   reason: string | null;
+  /**
+   * Bare tag with no leading "#", normalised server-side. Empty when the room
+   * has none, which is the default and means share text is unchanged.
+   */
+  shareHashtag: string;
+  /**
+   * External social-wall link for this room. Empty for most rooms, in which
+   * case the top-bar button is not rendered at all.
+   */
+  socialWallUrl: string;
+  /**
+   * Sponsor / attribution links. Empty for most rooms, in which case the
+   * Credits nav item is not rendered at all.
+   */
+  credits: EventCredit[];
+}
+
+export interface EventCredit {
+  name: string;
+  url: string;
 }
 
 /** Thrown when an event code does not resolve, so the caller can show No Showroom. */

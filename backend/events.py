@@ -75,8 +75,14 @@ def ad_submission_open(event: dict, now: datetime = None) -> bool:
     return (now or datetime.now(timezone.utc)) < closes_at
 
 
-def public_event(event: dict, now: datetime = None) -> dict:
-    """Shapes an event row for the API, with the window resolved server-side."""
+def public_event(event: dict, now: datetime = None, credits: list = None) -> dict:
+    """Shapes an event row for the API, with the window resolved server-side.
+
+    `credits` is passed in rather than read here because this module has no
+    database access by design -- it is the window logic and nothing else.
+    Callers that have a cursor supply the list; those that do not get an empty
+    one, which reads as "no credits" and simply hides the nav item.
+    """
     state = upload_state(event, now)
     return {
         "code": event["code"],
@@ -85,5 +91,14 @@ def public_event(event: dict, now: datetime = None) -> dict:
         "uploadClosesAt": event.get("uploadClosesAt"),
         "adsClosesAt": event.get("adsClosesAt"),
         "adSubmissionOpen": ad_submission_open(event, now),
+        # Empty string rather than null: the frontend appends this to share
+        # text, and "undefined" reaching a post is worse than nothing.
+        "shareHashtag": (event.get("shareHashtag") or "").strip(),
+        # Empty string hides the top-bar button. Stored with a scheme, so the
+        # client can use it as an href without touching it.
+        "socialWallUrl": (event.get("socialWallUrl") or "").strip(),
+        "credits": [
+            {"name": c["name"], "url": c["url"]} for c in (credits or [])
+        ],
         **state,
     }

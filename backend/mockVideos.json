@@ -1,90 +1,68 @@
 [
   {
     "id": "v1",
-    "title": "Midnight Neon Drive // Synthwave Chill Radio",
-    "description": "Step into the driver's seat of an 80s sports car and drift through the neon-drenched grid of a futuristic city. Perfect background vibes for hacking, design, and dreaming.",
-    "thumbnailUrl": "/images/thumbnails/v1.jpg",
-    "videoUrl": "https://media.w3.org/2010/05/sintel/trailer_hd.mp4",
-    "duration": "1:24:05",
-    "channelName": "SynthHorizon",
+    "title": "Bioluminescent Drift \u2014 A Reef in Deep Space",
+    "description": "Jellyfish the size of cathedrals drift past a coral reef that has no business existing in a nebula. Made in an afternoon, entirely on vibes.",
+    "thumbnailUrl": "/images/thumbnails/seed01.jpg",
+    "videoUrl": "https://storage.googleapis.com/vibetube-streaming-platform-public-streams/seed/video01.mp4",
+    "duration": "0:08",
+    "channelName": "NebulaTide",
     "channelAvatar": "/images/avatars/v1.jpg",
-    "seedFile": "sintel-trailer-hd.mp4"
+    "seedFile": "video01.mp4"
   },
   {
     "id": "v2",
-    "title": "Coding a Neural Network from Scratch in Assembly",
-    "description": "Because writing in Python is too mainstream. Watch me lose my mind trying to optimize matrix multiplications in x86-64 assembly language over the span of 12 hours.",
-    "thumbnailUrl": "/images/thumbnails/v2.jpg",
-    "videoUrl": "https://media.w3.org/2010/05/video/movie_300.mp4",
-    "duration": "48:12",
-    "channelName": "LowLevelWizard",
+    "title": "The Midnight Express Runs on Gold",
+    "description": "A brass locomotive crosses a trestle bridge at sunset, trailing more steam than physics strictly allows. Hand-drawn look, generated frames.",
+    "thumbnailUrl": "/images/thumbnails/seed02.jpg",
+    "videoUrl": "https://storage.googleapis.com/vibetube-streaming-platform-public-streams/seed/video02.mp4",
+    "duration": "0:08",
+    "channelName": "InkAndEmber",
     "channelAvatar": "/images/avatars/v2.jpg",
-    "seedFile": "movie-300.mp4"
+    "seedFile": "video02.mp4"
   },
   {
     "id": "v3",
-    "title": "Exploring Tokyo's Hidden Cyberpunk Alleys at 3 AM",
-    "description": "A quiet walk through the glowing neon streets, rain-slicked concrete, and hidden vending machines of Shinjuku. Cinematic 4K Binaural audio for ultimate immersion.",
-    "thumbnailUrl": "/images/thumbnails/v3.jpg",
-    "videoUrl": "https://media.w3.org/2010/05/bunny/trailer.mp4",
-    "duration": "22:15",
-    "channelName": "TokyoDrifter",
+    "title": "Paper Observatory: Charting a Folded Sky",
+    "description": "An entire observatory built from cut paper, parked on a cloud, pointed at stars that are also cut paper. Every layer generated, none of it glued.",
+    "thumbnailUrl": "/images/thumbnails/seed03.jpg",
+    "videoUrl": "https://storage.googleapis.com/vibetube-streaming-platform-public-streams/seed/video03.mp4",
+    "duration": "0:10",
+    "channelName": "PaperOrbit",
     "channelAvatar": "/images/avatars/v3.jpg",
-    "seedFile": "bunny-trailer.mp4"
+    "seedFile": "video03.mp4"
   },
   {
     "id": "v4",
-    "title": "Building the Ultimate Mech Keyboard (ASMR / Sound Test)",
-    "description": "Lubing linear switches, installing custom foam, and modding stabilizers on a custom aluminum 65% keyboard. Full sound profile test at the end.",
-    "thumbnailUrl": "/images/thumbnails/v4.jpg",
-    "videoUrl": "https://media.w3.org/2010/05/sintel/trailer.mp4",
-    "duration": "15:40",
-    "channelName": "ClickyClack",
+    "title": "Terraced Rain \u2014 Morning Over the Valley",
+    "description": "Water steps down a hillside of rice terraces while the mist decides whether to lift. The calmest ten seconds in this showroom.",
+    "thumbnailUrl": "/images/thumbnails/seed04.jpg",
+    "videoUrl": "https://storage.googleapis.com/vibetube-streaming-platform-public-streams/seed/video04.mp4",
+    "duration": "0:10",
+    "channelName": "SlowHorizon",
     "channelAvatar": "/images/avatars/v4.jpg",
-    "seedFile": "sintel-trailer.mp4"
+    "seedFile": "video04.mp4"
   },
   {
     "id": "v5",
-    "title": "Why I Switched from VS Code to Vim (And Regret It)",
-    "description": "It has been three months. I still don't know how to exit. My terminal has become my prison. Send help. Here is my honest review of modal editing.",
-    "thumbnailUrl": "/images/thumbnails/v5.jpg",
-    "videoUrl": "https://media.w3.org/2010/05/sintel/trailer_hd.mp4",
-    "duration": "10:02",
-    "channelName": "EscapeColonQ",
+    "title": "Hexshield \u2014 The Duel in the Great Hall",
+    "description": "Two robed spellcasters, one hexagonal barrier, and a great deal of fire in a room with very expensive stained glass. Nobody insured it.",
+    "thumbnailUrl": "/images/thumbnails/seed05.jpg",
+    "videoUrl": "https://storage.googleapis.com/vibetube-streaming-platform-public-streams/seed/video05.mp4",
+    "duration": "0:10",
+    "channelName": "EmberGlyph",
     "channelAvatar": "/images/avatars/v5.jpg",
-    "seedFile": "sintel-trailer-hd.mp4"
+    "seedFile": "video05.mp4"
   },
   {
     "id": "v6",
-    "title": "Ambient Space Journey to the Edge of the Universe",
-    "description": "Relax and unwind with slow-motion visualizations of deep space nebulas, black holes, and distant galaxies accompanied by deep ambient drones.",
-    "thumbnailUrl": "/images/thumbnails/v6.jpg",
-    "videoUrl": "https://media.w3.org/2010/05/video/movie_300.mp4",
-    "duration": "3:00:00",
-    "channelName": "StellarVibes",
+    "title": "The Skyship Leaves at Dawn",
+    "description": "A wooden sailing ship pushes off a waterfall's edge and out over a sea of cloud, past islands that forgot to fall. Departure is at first light.",
+    "thumbnailUrl": "/images/thumbnails/seed06.jpg",
+    "videoUrl": "https://storage.googleapis.com/vibetube-streaming-platform-public-streams/seed/video06.mp4",
+    "duration": "0:10",
+    "channelName": "CloudHarbour",
     "channelAvatar": "/images/avatars/v6.jpg",
-    "seedFile": "movie-300.mp4"
-  },
-  {
-    "id": "v7",
-    "title": "Design Systems: The Secret to Speed or a Creative Prison?",
-    "description": "An opinionated look at atomic design, component libraries, and how Figma files are taking over developer sanity. Let's talk about styling constraints.",
-    "thumbnailUrl": "/images/thumbnails/v7.jpg",
-    "videoUrl": "https://media.w3.org/2010/05/bunny/trailer.mp4",
-    "duration": "18:25",
-    "channelName": "PixelPerfect",
-    "channelAvatar": "/images/avatars/v7.jpg",
-    "seedFile": "bunny-trailer.mp4"
-  },
-  {
-    "id": "v8",
-    "title": "Analog Synthesizers: A Deep Dive into Frequency Modulation",
-    "description": "Patching patch bays, manipulating oscillators, and exploring the warmer side of sub-bass. A hands-on tutorial with Eurorack hardware modules.",
-    "thumbnailUrl": "/images/thumbnails/v8.jpg",
-    "videoUrl": "https://media.w3.org/2010/05/sintel/trailer.mp4",
-    "duration": "34:10",
-    "channelName": "WaveformLab",
-    "channelAvatar": "/images/avatars/v8.jpg",
-    "seedFile": "sintel-trailer.mp4"
+    "seedFile": "video06.mp4"
   }
 ]

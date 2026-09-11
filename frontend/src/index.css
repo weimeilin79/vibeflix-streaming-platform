@@ -58,6 +58,11 @@
   --color-input: #17171f;
   --color-spotlight: rgba(20, 166, 245, 0.12);
 
+  /* X's logo is monochrome, so its share chip has to invert against the
+     surface it sits on. Dark theme: light chip, dark mark. */
+  --x-chip-bg: #f5f3f0;
+  --x-chip-fg: #0b0b0f;
+
   /* Ambient effect layer. Dark mode carries the full cinematic treatment;
      light mode dials the same system down rather than switching it off. */
   --aurora-opacity: 0.5;
@@ -87,6 +92,10 @@
   --color-card-hover: #f4f4f5;
   --color-input: #ffffff;
   --color-spotlight: rgba(139, 92, 246, 0.06);
+
+  /* Light theme: the inverse, or the chip disappears into a white panel. */
+  --x-chip-bg: #0b0b0f;
+  --x-chip-fg: #f5f3f0;
 
   /* Multiply over a near-white ground tints the whole page, so light mode
      runs the colour fields far weaker than dark mode to protect text

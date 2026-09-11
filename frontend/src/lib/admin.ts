@@ -107,6 +107,11 @@ export const listEvents = () => request<AdminEvent[]>("/api/admin/events");
 export const listEntries = (code: string) =>
   request<AdminEntries>(`/api/admin/events/${encodeURIComponent(code)}/entries`);
 
+export interface EventCreditInput {
+  name: string;
+  url: string;
+}
+
 export interface EventInput {
   name: string;
   code?: string;
@@ -114,6 +119,15 @@ export interface EventInput {
   uploadClosesAt?: string | null;
   adsClosesAt?: string | null;
   seed?: boolean;
+  /** Bare tag; a leading "#" is stripped server-side. */
+  shareHashtag?: string | null;
+  /** A missing scheme is filled in as https:// server-side. */
+  socialWallUrl?: string | null;
+  /**
+   * Omitting this leaves stored credits untouched; sending [] clears them.
+   * The form always sends an array, so an edit is always authoritative.
+   */
+  credits?: EventCreditInput[];
 }
 
 export const createEvent = (input: EventInput) =>
