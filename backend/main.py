@@ -29,6 +29,7 @@ from database import (
     create_event, list_events_with_counts, set_event_windows,
     list_credits, replace_credits, set_event_hashtag, set_event_social_wall,
     delete_video_by_project, delete_ad_by_project, delete_event,
+    delete_seed_videos,
     SANDBOX_EVENT_CODE,
     list_admin_users, add_admin_user, remove_admin_user, count_active_admins,
     normalize_email,
@@ -1232,6 +1233,22 @@ def admin_delete_video(code: str, project_id: str):
         conn.commit()
 
     return {"deleted": removed, "adsDeleted": ads_removed, "projectId": project_id}
+
+
+@app.delete("/api/admin/events/{code}/seeds", dependencies=[Depends(require_admin_ui)])
+def admin_delete_seeds(code: str):
+    """Removes the sample videos from a showroom, leaving its real content.
+
+    Seeded rows have no projectId, so the per-project delete cannot reach
+    them. Uploads and ad placeholders are left alone.
+    """
+    with get_db_conn() as conn:
+        cursor = conn.cursor()
+        load_event_or_404(cursor, code)
+        removed = delete_seed_videos(cursor, code)
+        conn.commit()
+    print(f"Removed {removed} seeded video(s) from {code}")
+    return {"deleted": removed, "code": code}
 
 
 @app.delete("/api/admin/events/{code}/ads/{project_id}", dependencies=[Depends(require_admin_ui)])

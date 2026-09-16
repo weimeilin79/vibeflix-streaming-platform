@@ -8,7 +8,7 @@ import {
   AdminEvent, AdminEntries, EventInput, EventCreditInput, AdminIdentity,
   NotAuthorizedError,
   listEvents, listEntries, createEvent, updateEvent, closeEvent, deleteEvent,
-  deleteVideo, deleteAd, localInputToUtc, utcToLocalInput, fetchMe,
+  deleteVideo, deleteAd, deleteSeeds, localInputToUtc, utcToLocalInput, fetchMe,
 } from "../lib/admin";
 import {
   SignedInUser, onAdminAuthChanged, signInWithGoogle, signOutAdmin,
@@ -655,9 +655,36 @@ export const AdminPage = ({ theme, onToggleTheme }: AdminPageProps) => {
               ) : (
                 <div className="divide-y divide-hairline">
                   <div className="p-4">
-                    <h3 className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-fg-muted mb-3">
-                      <Film className="w-3.5 h-3.5" /> Videos ({entries.videos.length})
-                    </h3>
+                    <div className="flex items-center justify-between gap-3 mb-3">
+                      <h3 className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-fg-muted">
+                        <Film className="w-3.5 h-3.5" /> Videos ({entries.videos.length})
+                      </h3>
+                      {/* Seeded rows have no projectId, so the per-row delete
+                          cannot reach them. This is the only way to clear the
+                          sample videos out of a room. */}
+                      {entries.videos.some((v) => v.source === "seed") && (
+                        <button
+                          disabled={busy}
+                          onClick={() =>
+                            confirmThen("seeds", () =>
+                              run(
+                                () => deleteSeeds(selected as string),
+                                "Removed the sample videos"
+                              )
+                            )
+                          }
+                          className={`px-2.5 py-1 rounded-lg text-[10px] font-bold border transition-colors cursor-pointer disabled:opacity-40 ${
+                            confirming === "seeds"
+                              ? "bg-rose-500/15 border-rose-400/50 text-rose-300"
+                              : "bg-card border-hairline text-fg-muted hover:text-fg hover:border-rose-400/50"
+                          }`}
+                        >
+                          {confirming === "seeds"
+                            ? "Remove sample videos?"
+                            : "Remove sample videos"}
+                        </button>
+                      )}
+                    </div>
                     <div className="flex flex-col gap-2">
                       {entries.videos.map((video) => {
                         // Deleting the video takes its ad with it, so say so

@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import sqlite3
@@ -598,6 +599,23 @@ def placeholder_video_urls(cursor, event_code: str) -> set:
     return {scalar(row) for row in cursor.fetchall()}
 
 
+def delete_seed_videos(cursor, event_code: str) -> int:
+    """Removes a showroom's seeded videos. Caller commits.
+
+    Seeded rows carry no projectId, which is what ads and the per-project
+    delete are keyed on -- so without this there is no way to take them out of
+    a room at all. Guest uploads and ad placeholders are untouched.
+
+    The room is left with no seed rows, and init_db's realignment deliberately
+    skips rooms in that state, so this stays done across deploys rather than
+    being undone by the next one.
+    """
+    cursor.execute(query_placeholder(
+        "DELETE FROM videos WHERE eventId = ? AND source = ?"
+    ), (event_code, SOURCE_SEED))
+    return cursor.rowcount or 0
+
+
 def rebalance_placeholders(cursor, event_code: str) -> int:
     """Spreads a showroom's placeholders evenly across the seed clips.
 
@@ -606,8 +624,12 @@ def rebalance_placeholders(cursor, event_code: str) -> int:
     by definition -- a stand-in for a video that has not arrived -- so
     reassigning one changes nothing an organiser chose.
 
-    Assignment is round-robin over (createdAt, id), so running this twice
-    produces the same answer and the guard below then skips it entirely.
+    Assignment is round-robin over a hash of the row id rather than over
+    creation order: round-robin over (createdAt, id) is even, but it lays the
+    clips down in the same order every time, so the grid reads as a repeating
+    stripe. Hashing scatters them while keeping the counts even, and keeps the
+    result stable -- running this twice produces the same answer, and the
+    guard below then skips it entirely.
     """
     seeds = load_seed_videos()
     if not seeds:
@@ -622,16 +644,19 @@ def rebalance_placeholders(cursor, event_code: str) -> int:
     if not rows:
         return 0
 
-    # Already even? Leave it alone rather than rewriting rows on every boot.
-    counts = {}
-    for row in rows:
-        counts[row["videoUrl"]] = counts.get(row["videoUrl"], 0) + 1
-    fair = -(-len(rows) // len(seeds))          # ceil
-    if len(counts) >= min(len(rows), len(seeds)) and max(counts.values()) <= fair:
+    # Stable scatter: same input, same answer, but no visible ordering.
+    rows.sort(key=lambda r: hashlib.sha1(str(r["id"]).encode()).hexdigest())
+
+    # Compare against the assignment this function would produce, rather than
+    # against a fairness heuristic. Evenness alone cannot tell a striped
+    # layout from a scattered one, so a room that was already even would never
+    # be re-scattered. This converges on one canonical answer and is a no-op
+    # from the second run onward.
+    planned = [(row, seeds[index % len(seeds)]) for index, row in enumerate(rows)]
+    if all(row.get("videoUrl") == seed.get("videoUrl") for row, seed in planned):
         return 0
 
-    for index, row in enumerate(rows):
-        seed = seeds[index % len(seeds)]
+    for row, seed in planned:
         cursor.execute(query_placeholder("""
             UPDATE videos SET
                 videoUrl = ?, thumbnailUrl = ?, duration = ?,

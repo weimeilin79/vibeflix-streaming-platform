@@ -166,6 +166,18 @@ export const deleteVideo = (code: string, projectId: string) =>
     { method: "DELETE" }
   );
 
+/**
+ * Removes a showroom's sample videos. Uploads and ad placeholders survive.
+ *
+ * Seeded rows carry no projectId, so deleteVideo cannot reach them -- this is
+ * the only way to take them out of a room.
+ */
+export const deleteSeeds = (code: string) =>
+  request<{ deleted: number }>(
+    `/api/admin/events/${encodeURIComponent(code)}/seeds`,
+    { method: "DELETE" }
+  );
+
 export const deleteAd = (code: string, projectId: string) =>
   request<{ deleted: number }>(
     `/api/admin/events/${encodeURIComponent(code)}/ads/${encodeURIComponent(projectId)}`,
