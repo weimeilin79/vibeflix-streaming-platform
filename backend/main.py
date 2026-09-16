@@ -308,9 +308,15 @@ def create_placeholder_video(cursor, code: str, project_id: str) -> str:
 
     used = placeholder_video_urls(cursor, code)
     unused = [s for s in seeds if s.get("videoUrl") not in used]
-    # Deterministic once every clip is in use, so the rotation is even rather
-    # than randomly clumping on one clip.
-    chosen = random.choice(unused) if unused else seeds[len(used) % len(seeds)]
+    # Prefer a clip nothing is standing in for yet; once they are all in use,
+    # pick at random.
+    #
+    # The fallback used to be `seeds[len(used) % len(seeds)]`, described as an
+    # even rotation. It is not: `used` is the set of DISTINCT urls, so once
+    # every clip is in play it stops growing, the modulo is always 0, and
+    # every placeholder after the seventh got seeds[0]. Thirty cards in a row
+    # showed the same clip.
+    chosen = random.choice(unused) if unused else random.choice(seeds)
 
     video_id = new_video_id()
     insert_video(cursor, {

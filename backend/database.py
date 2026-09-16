@@ -598,6 +598,56 @@ def placeholder_video_urls(cursor, event_code: str) -> set:
     return {scalar(row) for row in cursor.fetchall()}
 
 
+def rebalance_placeholders(cursor, event_code: str) -> int:
+    """Spreads a showroom's placeholders evenly across the seed clips.
+
+    Repairs rows created while the picker's fallback was broken, which handed
+    every placeholder past the seventh the same clip. Their clip is arbitrary
+    by definition -- a stand-in for a video that has not arrived -- so
+    reassigning one changes nothing an organiser chose.
+
+    Assignment is round-robin over (createdAt, id), so running this twice
+    produces the same answer and the guard below then skips it entirely.
+    """
+    seeds = load_seed_videos()
+    if not seeds:
+        return 0
+
+    cursor.execute(query_placeholder("""
+        SELECT id, projectId, videoUrl FROM videos
+        WHERE eventId = ? AND source = ?
+        ORDER BY createdAt, id
+    """), (event_code, SOURCE_PLACEHOLDER))
+    rows = [normalize_row(row) for row in cursor.fetchall()]
+    if not rows:
+        return 0
+
+    # Already even? Leave it alone rather than rewriting rows on every boot.
+    counts = {}
+    for row in rows:
+        counts[row["videoUrl"]] = counts.get(row["videoUrl"], 0) + 1
+    fair = -(-len(rows) // len(seeds))          # ceil
+    if len(counts) >= min(len(rows), len(seeds)) and max(counts.values()) <= fair:
+        return 0
+
+    for index, row in enumerate(rows):
+        seed = seeds[index % len(seeds)]
+        cursor.execute(query_placeholder("""
+            UPDATE videos SET
+                videoUrl = ?, thumbnailUrl = ?, duration = ?,
+                channelAvatar = ?, title = ?
+            WHERE id = ?
+        """), (
+            seed.get("videoUrl", ""),
+            seed.get("thumbnailUrl", MISSING_THUMBNAIL),
+            seed.get("duration", "0:00"),
+            seed.get("channelAvatar", "?"),
+            f"{row['projectId']} : {seed.get('title', 'Sample clip')}",
+            row["id"],
+        ))
+    return len(rows)
+
+
 def count_uploads(cursor, event_code: str) -> int:
     """Guest uploads in a showroom, in any state. Seeded rows do not count."""
     cursor.execute(query_placeholder(
@@ -1282,6 +1332,18 @@ def init_db():
                 print(f"Realigned {event_code} to the current seed set "
                       f"({count} videos; {len(stale)} retired, "
                       f"{len(current) - len(present)} added)")
+
+        # Even out any showroom whose placeholders clumped on one clip.
+        cursor.execute(query_placeholder(
+            "SELECT DISTINCT eventId FROM videos WHERE source = ?"
+        ), (SOURCE_PLACEHOLDER,))
+        for event_code in [scalar(row) for row in cursor.fetchall()]:
+            if not event_code:
+                continue
+            moved = rebalance_placeholders(cursor, event_code)
+            if moved:
+                conn.commit()
+                print(f"Rebalanced {moved} placeholder(s) in {event_code}")
 
         # Seed the sandbox only when it is empty, so restarts never duplicate rows.
         cursor.execute(query_placeholder(
