@@ -599,6 +599,48 @@ def placeholder_video_urls(cursor, event_code: str) -> set:
     return {scalar(row) for row in cursor.fetchall()}
 
 
+def delete_placeholder_videos(cursor, event_code: str) -> dict:
+    """Removes a showroom's ad placeholders, and the ads attached to them.
+
+    The cascade matches the per-project delete: ads are matched to videos by
+    projectId, so an ad whose video has gone can never play again and would
+    only inflate the admin totals.
+
+    Seeded videos and guest uploads are untouched -- only stand-ins created by
+    an ad arriving before its video.
+    """
+    cursor.execute(query_placeholder(
+        "SELECT projectId FROM videos WHERE eventId = ? AND source = ?"
+    ), (event_code, SOURCE_PLACEHOLDER))
+    project_ids = [scalar(row) for row in cursor.fetchall() if scalar(row)]
+
+    ads = 0
+    for project_id in project_ids:
+        cursor.execute(query_placeholder(
+            "DELETE FROM ads WHERE eventId = ? AND projectId = ?"
+        ), (event_code, project_id))
+        ads += cursor.rowcount or 0
+
+    cursor.execute(query_placeholder(
+        "DELETE FROM videos WHERE eventId = ? AND source = ?"
+    ), (event_code, SOURCE_PLACEHOLDER))
+    return {"videos": cursor.rowcount or 0, "ads": ads}
+
+
+def project_rooms_elsewhere(cursor, project_id: str, event_code: str) -> list:
+    """Other showrooms where this project has a real uploaded video.
+
+    Used to catch an ad aimed at the wrong room. Only guest uploads count:
+    a placeholder or a seed elsewhere says nothing about where the project
+    belongs, but a video someone actually uploaded does.
+    """
+    cursor.execute(query_placeholder("""
+        SELECT DISTINCT eventId FROM videos
+        WHERE projectId = ? AND eventId <> ? AND source = ?
+    """), (project_id, event_code, SOURCE_UPLOAD))
+    return [scalar(row) for row in cursor.fetchall() if scalar(row)]
+
+
 def delete_seed_videos(cursor, event_code: str) -> int:
     """Removes a showroom's seeded videos. Caller commits.
 

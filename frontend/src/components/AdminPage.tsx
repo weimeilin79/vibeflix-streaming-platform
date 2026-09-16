@@ -8,7 +8,8 @@ import {
   AdminEvent, AdminEntries, EventInput, EventCreditInput, AdminIdentity,
   NotAuthorizedError,
   listEvents, listEntries, createEvent, updateEvent, closeEvent, deleteEvent,
-  deleteVideo, deleteAd, deleteSeeds, localInputToUtc, utcToLocalInput, fetchMe,
+  deleteVideo, deleteAd, deleteSeeds, deletePlaceholders,
+  localInputToUtc, utcToLocalInput, fetchMe,
 } from "../lib/admin";
 import {
   SignedInUser, onAdminAuthChanged, signInWithGoogle, signOutAdmin,
@@ -662,6 +663,28 @@ export const AdminPage = ({ theme, onToggleTheme }: AdminPageProps) => {
                       {/* Seeded rows have no projectId, so the per-row delete
                           cannot reach them. This is the only way to clear the
                           sample videos out of a room. */}
+                      {entries.videos.some((v) => v.source === "placeholder") && (
+                        <button
+                          disabled={busy}
+                          onClick={() =>
+                            confirmThen("placeholders", () =>
+                              run(
+                                () => deletePlaceholders(selected as string),
+                                "Removed the ad placeholders"
+                              )
+                            )
+                          }
+                          className={`px-2.5 py-1 rounded-lg text-[10px] font-bold border transition-colors cursor-pointer disabled:opacity-40 ${
+                            confirming === "placeholders"
+                              ? "bg-rose-500/15 border-rose-400/50 text-rose-300"
+                              : "bg-card border-hairline text-fg-muted hover:text-fg hover:border-rose-400/50"
+                          }`}
+                        >
+                          {confirming === "placeholders"
+                            ? `Remove ${entries.videos.filter((v) => v.source === "placeholder").length} placeholders and their ads?`
+                            : "Remove ad placeholders"}
+                        </button>
+                      )}
                       {entries.videos.some((v) => v.source === "seed") && (
                         <button
                           disabled={busy}

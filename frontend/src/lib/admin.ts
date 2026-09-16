@@ -178,6 +178,18 @@ export const deleteSeeds = (code: string) =>
     { method: "DELETE" }
   );
 
+/**
+ * Removes a showroom's ad placeholders and the ads attached to them.
+ *
+ * Bulk rather than per-row: a room can accumulate dozens of stand-ins, and
+ * clearing them one at a time is not a realistic operation.
+ */
+export const deletePlaceholders = (code: string) =>
+  request<{ videos: number; ads: number }>(
+    `/api/admin/events/${encodeURIComponent(code)}/placeholders`,
+    { method: "DELETE" }
+  );
+
 export const deleteAd = (code: string, projectId: string) =>
   request<{ deleted: number }>(
     `/api/admin/events/${encodeURIComponent(code)}/ads/${encodeURIComponent(projectId)}`,

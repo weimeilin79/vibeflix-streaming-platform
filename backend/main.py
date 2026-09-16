@@ -29,7 +29,7 @@ from database import (
     create_event, list_events_with_counts, set_event_windows,
     list_credits, replace_credits, set_event_hashtag, set_event_social_wall,
     delete_video_by_project, delete_ad_by_project, delete_event,
-    delete_seed_videos,
+    delete_seed_videos, project_rooms_elsewhere, delete_placeholder_videos,
     SANDBOX_EVENT_CODE,
     list_admin_users, add_admin_user, remove_admin_user, count_active_admins,
     normalize_email,
@@ -1251,6 +1251,23 @@ def admin_delete_seeds(code: str):
     return {"deleted": removed, "code": code}
 
 
+@app.delete("/api/admin/events/{code}/placeholders", dependencies=[Depends(require_admin_ui)])
+def admin_delete_placeholders(code: str):
+    """Clears the stand-ins created by ads that arrived before their video.
+
+    Their ads go with them, for the same reason the per-project delete
+    cascades: an ad with no video can never play. Uploads and seeds stay.
+    """
+    with get_db_conn() as conn:
+        cursor = conn.cursor()
+        load_event_or_404(cursor, code)
+        removed = delete_placeholder_videos(cursor, code)
+        conn.commit()
+    print(f"Removed {removed['videos']} placeholder(s) and "
+          f"{removed['ads']} ad(s) from {code}")
+    return {**removed, "code": code}
+
+
 @app.delete("/api/admin/events/{code}/ads/{project_id}", dependencies=[Depends(require_admin_ui)])
 def admin_delete_ad(code: str, project_id: str):
     """Deletes only the ad. The video is untouched and keeps playing."""
@@ -1321,6 +1338,25 @@ async def create_ad(
         # one of the seed clips as a stand-in, so the ad has something to play
         # in front of and the team can upload later without resubmitting it.
         if not find_by_project(cursor, code, project_id):
+            # An ad for a project whose video is sitting in a different room is
+            # almost always aimed at the wrong room, not an ad arriving before
+            # its video. Creating a stand-in here would make that mistake look
+            # like a success and strand the ad where nobody will see it --
+            # which is exactly how 35 ads ended up in the sandbox.
+            #
+            # Only real uploads elsewhere count as evidence: a placeholder or a
+            # seed in another room says nothing about where a project belongs.
+            elsewhere = project_rooms_elsewhere(cursor, project_id, code)
+            if elsewhere:
+                rooms = ", ".join(sorted(elsewhere))
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"Project '{project_id}' has its video in {rooms}, not "
+                        f"in this showroom. Submit the ad to {rooms} instead, "
+                        "or upload the video here first."
+                    ),
+                )
             placeholder_id = create_placeholder_video(cursor, code, project_id)
             conn.commit()
             print(f"Created placeholder {placeholder_id} for project "
