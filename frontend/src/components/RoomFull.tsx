@@ -37,7 +37,9 @@ export const RoomFull = ({ code, onRetry }: RoomFullProps) => (
         Too many people are watching
       </p>
       <p
-        className="font-display font-bold tracking-[0.2em] uppercase text-vibe-purple mb-8 break-all rise"
+        // Real case, deliberately: this screen exists to show the code that
+        // did not work, and uppercasing it hid the very typo being reported.
+        className="font-display font-bold tracking-[0.15em] text-vibe-purple mb-8 break-all rise"
         style={{ animationDelay: "180ms" }}
       >
         {code}

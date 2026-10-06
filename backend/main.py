@@ -753,6 +753,7 @@ def read_event(code: str):
     with get_db_conn() as conn:
         cursor = conn.cursor()
         event = load_event_or_404(cursor, code)
+        code = event["code"]
         # Credits come back on the room fetch the client already makes, so the
         # Credits nav item can decide whether to exist on first paint rather
         # than appearing a moment later.
@@ -782,7 +783,7 @@ def event_presence(code: str, payload: PresencePayload):
 
     with get_db_conn() as conn:
         cursor = conn.cursor()
-        load_event_or_404(cursor, code)
+        code = load_event_or_404(cursor, code)["code"]
 
         others = count_present(cursor, code, exclude_client=client_id)
         if others >= MAX_CONCURRENT_VIEWERS:
@@ -1076,8 +1077,19 @@ def admin_create_event(payload: AdminEventPayload):
 
     with get_db_conn() as conn:
         cursor = conn.cursor()
-        if get_event(cursor, code):
-            raise HTTPException(status_code=409, detail=f"Event '{code}' already exists.")
+        # get_event ignores case, so this also refuses a code that differs from
+        # an existing one only by case. Two such events would make every
+        # lookup ambiguous -- whichever row the database returned first would
+        # win, and the other would be unreachable.
+        clash = get_event(cursor, code)
+        if clash:
+            detail = (
+                f"Event '{clash['code']}' already exists."
+                if clash["code"] == code
+                else f"Event '{clash['code']}' already exists, and codes are "
+                     f"matched without regard to case. Pick a different code."
+            )
+            raise HTTPException(status_code=409, detail=detail)
         seeded = create_event(cursor, code, name, opens, closes, with_seed=payload.seed)
         if payload.adsClosesAt:
             set_event_windows(cursor, code, opens, closes, payload.adsClosesAt)
@@ -1103,7 +1115,7 @@ def admin_update_event(code: str, payload: AdminEventPayload):
 
     with get_db_conn() as conn:
         cursor = conn.cursor()
-        load_event_or_404(cursor, code)
+        code = load_event_or_404(cursor, code)["code"]
         set_event_windows(cursor, code, opens, closes, payload.adsClosesAt)
         if payload.name.strip():
             cursor.execute(query_placeholder(
@@ -1132,6 +1144,7 @@ def admin_close_event(code: str):
     with get_db_conn() as conn:
         cursor = conn.cursor()
         event = load_event_or_404(cursor, code)
+        code = event["code"]
         set_event_windows(cursor, code, event.get("uploadOpensAt"), now, now)
         conn.commit()
         event = get_event(cursor, code)
@@ -1144,7 +1157,7 @@ def admin_list_entries(code: str):
     """Every video and ad in a showroom, keyed by project for the admin table."""
     with get_db_conn() as conn:
         cursor = conn.cursor()
-        load_event_or_404(cursor, code)
+        code = load_event_or_404(cursor, code)["code"]
         cursor.execute(query_placeholder(
             "SELECT * FROM videos WHERE eventId = ? ORDER BY createdAt DESC, id"
         ), (code,))
@@ -1194,7 +1207,7 @@ def admin_delete_event(code: str, admin: dict = Depends(require_admin_ui)):
 
     with get_db_conn() as conn:
         cursor = conn.cursor()
-        load_event_or_404(cursor, code)
+        code = load_event_or_404(cursor, code)["code"]
         removed = delete_event(cursor, code)
         conn.commit()
 
@@ -1222,7 +1235,7 @@ def admin_delete_video(code: str, project_id: str):
     """
     with get_db_conn() as conn:
         cursor = conn.cursor()
-        load_event_or_404(cursor, code)
+        code = load_event_or_404(cursor, code)["code"]
         removed = delete_video_by_project(cursor, code, project_id)
         if not removed:
             raise HTTPException(
@@ -1244,7 +1257,7 @@ def admin_delete_seeds(code: str):
     """
     with get_db_conn() as conn:
         cursor = conn.cursor()
-        load_event_or_404(cursor, code)
+        code = load_event_or_404(cursor, code)["code"]
         removed = delete_seed_videos(cursor, code)
         conn.commit()
     print(f"Removed {removed} seeded video(s) from {code}")
@@ -1260,7 +1273,7 @@ def admin_delete_placeholders(code: str):
     """
     with get_db_conn() as conn:
         cursor = conn.cursor()
-        load_event_or_404(cursor, code)
+        code = load_event_or_404(cursor, code)["code"]
         removed = delete_placeholder_videos(cursor, code)
         conn.commit()
     print(f"Removed {removed['videos']} placeholder(s) and "
@@ -1273,7 +1286,7 @@ def admin_delete_ad(code: str, project_id: str):
     """Deletes only the ad. The video is untouched and keeps playing."""
     with get_db_conn() as conn:
         cursor = conn.cursor()
-        load_event_or_404(cursor, code)
+        code = load_event_or_404(cursor, code)["code"]
         removed = delete_ad_by_project(cursor, code, project_id)
         conn.commit()
     if not removed:
@@ -1323,6 +1336,7 @@ async def create_ad(
     with get_db_conn() as conn:
         cursor = conn.cursor()
         event = load_event_or_404(cursor, code)
+        code = event["code"]
 
         # The deadline gates changes only; ads already uploaded keep playing.
         if not ad_submission_open(event):
@@ -1385,7 +1399,7 @@ def get_ad_for_project(code: str, project_id: str):
     """
     with get_db_conn() as conn:
         cursor = conn.cursor()
-        load_event_or_404(cursor, code)
+        code = load_event_or_404(cursor, code)["code"]
         # No window check here on purpose: an uploaded ad plays indefinitely.
         # `active` (set by `admin.py set-ads --disable`) is the only thing that
         # stops an ad showing.
@@ -1411,7 +1425,7 @@ def get_event_ads(code: str, token: str = Header(None, alias="X-Admin-Token")):
     require_admin(token)
     with get_db_conn() as conn:
         cursor = conn.cursor()
-        load_event_or_404(cursor, code)
+        code = load_event_or_404(cursor, code)["code"]
         return JSONResponse(content=list_ads(cursor, code))
 
 
@@ -1420,7 +1434,7 @@ def get_event_videos(code: str):
     """Lists the videos belonging to one event. Newest first."""
     with get_db_conn() as conn:
         cursor = conn.cursor()
-        load_event_or_404(cursor, code)
+        code = load_event_or_404(cursor, code)["code"]
         cursor.execute(query_placeholder(
             "SELECT * FROM videos WHERE eventId = ? ORDER BY createdAt DESC, id"
         ), (code,))
@@ -1458,6 +1472,7 @@ async def create_video(
     with get_db_conn() as conn:
         cursor = conn.cursor()
         event = load_event_or_404(cursor, code)
+        code = event["code"]
 
     state = upload_state(event)
     if not state["uploadOpen"]:
@@ -1480,7 +1495,7 @@ def seed_event_metadata(
     require_admin(token)
     with get_db_conn() as conn:
         cursor = conn.cursor()
-        load_event_or_404(cursor, code)
+        code = load_event_or_404(cursor, code)["code"]
         created = [insert_video(cursor, video.model_dump(), code) for video in payload.videos]
         conn.commit()
     return {"created": created, "count": len(created)}
@@ -1503,7 +1518,7 @@ async def seed_event_upload(
     require_admin(token)
     with get_db_conn() as conn:
         cursor = conn.cursor()
-        load_event_or_404(cursor, code)
+        code = load_event_or_404(cursor, code)["code"]
 
     video_id = ingest_upload(code, videoFile, title, description, duration, displayName,
                              source=SOURCE_SEED)

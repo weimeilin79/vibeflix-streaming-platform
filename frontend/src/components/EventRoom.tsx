@@ -280,7 +280,9 @@ export const EventRoom = ({ code, theme, onToggleTheme }: EventRoomProps) => {
             <span className="shrink-0 px-3 py-1.5 rounded-full bg-fg text-stage text-xs font-bold whitespace-nowrap">
               {event?.name || "Loading showroom…"}
             </span>
-            <span className="shrink-0 px-3 py-1.5 rounded-full bg-overlay border border-hairline text-[10px] font-bold uppercase tracking-[0.2em] text-fg-muted">
+            {/* Shown in its real case: codes are case-sensitive, and this chip
+                is what people read off a screen and type in. */}
+            <span className="shrink-0 px-3 py-1.5 rounded-full bg-overlay border border-hairline text-[10px] font-bold tracking-[0.15em] text-fg-muted">
               {code}
             </span>
             {notice && (

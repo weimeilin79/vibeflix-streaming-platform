@@ -168,9 +168,14 @@ export const GatePage = ({ theme, onToggleTheme }: GatePageProps) => {
               autoFocus
               value={code}
               onChange={(e) => setCode(e.target.value)}
-              placeholder="EVENT CODE"
+              placeholder="Event code"
               aria-label="Event code"
-              className="relative w-full bg-input border border-hairline rounded-2xl pl-12 pr-4 py-4 text-center text-lg font-display font-bold tracking-[0.3em] uppercase text-fg placeholder:text-fg-muted/50 placeholder:tracking-[0.2em] focus:outline-none focus:border-transparent transition-all duration-200"
+              // No `uppercase` here. Codes are case-sensitive on the server, and the
+              // class only transformed what was DISPLAYED -- the value submitted
+              // stayed as typed. Someone entering "googlenyc" saw "GOOGLENYC",
+              // submitted "googlenyc", and got a 404 they could not see the cause
+              // of. The field now shows exactly what will be sent.
+              className="relative w-full bg-input border border-hairline rounded-2xl pl-12 pr-4 py-4 text-center text-lg font-display font-bold tracking-[0.2em] text-fg placeholder:text-fg-muted/50 placeholder:tracking-[0.2em] focus:outline-none focus:border-transparent transition-all duration-200"
             />
           </div>
 

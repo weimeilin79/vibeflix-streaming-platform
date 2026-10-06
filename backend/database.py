@@ -1097,8 +1097,21 @@ def normalize_row(row):
     }
 
 def get_event(cursor, code: str):
-    """Looks up a single event by code. Returns a dict or None."""
-    cursor.execute(query_placeholder("SELECT * FROM events WHERE code = ?"), (code,))
+    """Looks up a single event by code, ignoring case. Returns a dict or None.
+
+    Codes are read off a slide and retyped, so case is routinely lost in the
+    retelling -- "googlenyc" has to reach GoogleNYC. The stored spelling is
+    still what comes back, so the room displays the code as the organiser
+    wrote it.
+
+    The row this returns is the authority on spelling: callers key videos,
+    ads and presence off `event["code"]`, never off what the caller typed,
+    or a request for /e/googlenyc resolves the event and then finds none of
+    its content.
+    """
+    cursor.execute(query_placeholder(
+        "SELECT * FROM events WHERE LOWER(code) = LOWER(?)"
+    ), (code,))
     return normalize_row(cursor.fetchone())
 
 def _column_names(cursor, table: str) -> set:
