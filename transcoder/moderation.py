@@ -47,31 +47,56 @@ FAIL_CLOSED = os.getenv("MODERATION_FAIL_CLOSED", "false").strip().lower() in (
 RETRY_ATTEMPTS = int(os.getenv("MODERATION_RETRY_ATTEMPTS", "10"))
 RETRY_INTERVAL_SECONDS = float(os.getenv("MODERATION_RETRY_INTERVAL", "30"))
 
+# What screening is for: keeping harmful content off a shared screen in front
+# of a room. It is NOT a topicality filter.
+#
+# The first version framed the task as "attendees upload short demos they built
+# during the labs" and blocked anything "clearly not a workshop demo". Both
+# halves misfired. These labs produce cinematic generated video -- dragons,
+# noir trains, animated shorts -- and the model read exactly that polish as
+# evidence of a commercial trailer rather than attendee work. Every block in
+# production came back off_topic, none for anything harmful, and because
+# screening runs before the encode a rejected video is never converted at all.
+#
+# So: the bar is harm, the benefit of the doubt goes to the submitter, and an
+# organiser removes anything merely unwanted by hand.
 POLICY_PROMPT = """You are screening a video submitted to a public showroom at a
-Google Cloud developer workshop. Attendees upload short demos they built during
-the labs, and the video is shown on a shared screen to a room of attendees.
+Google Cloud developer workshop, where it will be shown on a shared screen to a
+room of attendees.
 
-Decide whether this video is appropriate to display in that setting.
+Attendees make these videos with generative AI, so most of them look
+cinematic: animation, film-like footage, dramatic scenes, title cards, music.
+That polish is the expected output of the lab, not a sign the video came from
+somewhere else. Judge only whether the CONTENT is harmful -- never whether it
+looks professionally produced, and never whether it resembles a software demo.
 
-Block the video if it contains any of:
+Block the video only if it contains:
 - sexual or sexually suggestive content, nudity
 - graphic violence, gore, or depictions of self-harm
 - hate speech, slurs, or harassment of a person or group
 - illegal activity, or instructions for causing harm
 - shocking or disturbing imagery
-- content that is clearly not a workshop demo and is instead advertising,
-  political campaigning, or personal attacks
+- a personal attack on a real, identifiable person
+- advertising for an unrelated real commercial product, or a political campaign
 
-Do NOT block for:
-- rough production quality, bugs, placeholder art, or an unfinished demo
-- ordinary software content: terminals, code, dashboards, slides, AI output
-- mild profanity in speech
-- a person simply appearing on camera or presenting
+Do NOT block for any of these:
+- looking cinematic, animated, filmic, or professionally produced
+- being a story, a short film, a trailer, a music video, or an advert for an
+  invented product -- these are all normal lab output
+- not resembling a software demo, a screen recording, or a presentation
+- showing no code, no terminal, and no Google Cloud product
+- rough production quality, bugs, placeholder art, or an unfinished piece
+- mild profanity, cartoon peril, or mild comic violence
+- a person simply appearing on camera
+
+When it is a close call, allow it. An organiser can remove a video by hand in
+seconds, but a video blocked by mistake is never converted, and its submitter
+is left with no way to show their work.
 
 Respond with allowed=true when the video is fine to show. When blocking, set
-category to one short slug (for example "sexual", "violence", "hate",
-"illegal", "shocking", "off_topic") and give a one-sentence reason an organiser
-can act on. Do not repeat slurs or describe graphic detail in the reason.
+category to one short slug ("sexual", "violence", "hate", "illegal",
+"shocking", "attack", "advertising") and give a one-sentence reason an
+organiser can act on. Do not repeat slurs or describe graphic detail.
 """
 
 # The policy above is the default, not the last word. Setting MODERATION_POLICY
