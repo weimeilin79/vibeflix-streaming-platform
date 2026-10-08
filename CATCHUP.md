@@ -1,107 +1,124 @@
 # Vibetube Catch-Up & Hand-Off Guide
 
-Welcome to **Vibetube**! This document summarizes the project's development history, current architecture, Google Cloud Platform (GCP) deployment status, and the immediate next steps to transition development smoothly.
+Current state of the project, what is deployed, and what is unfinished.
+
+> `README.md` is the reference for how everything works and how to run it.
+> This file is the shorter question: where are we, and what is still open.
+> `ARCHITECTURE.md` predates the event system and is kept only for history.
 
 ---
 
-## 1. Overview of Completed Work
+## 1. What this is
 
-Vibetube has been built in eight incremental phases:
-1. **Phase 1: Minimalist Search & Grid Main Page**: Built the React, Vite, TypeScript, and Tailwind CSS v4 frontend skeleton with mock data.
-2. **Phase 2: Video Player Integration**: Added a custom glassmorphism modal player utilizing high-availability public domain video streams.
-3. **Phase 3: Backend Decoupling**: Restructured the app into discrete `/frontend` and `/backend` packages, introducing a Python FastAPI server.
-4. **Phase 4: SQLite Database**: Migrated backend data storage from JSON files to a local SQLite database (`vibetube.db`).
-5. **Phase 5 & 6: Video & Binary Uploads**: Supported user video uploads, routing binary files to `/uploads` locally and mounting static file serving in FastAPI.
-6. **Phase 7: Transcoding & HLS Streaming**: Developed a Python-based transcoder using `ffmpeg` to generate adaptive bitrate HLS formats (480p, 720p, 1080p, `master.m3u8`) and wired up client playback using `hls.js` with Safari fallbacks.
-7. **Phase 8: Firebase Authentication**: Configured CDN-based Firebase Auth with a dual mode—automatic offline `MockAuth` simulation for seamless local development, and RS256 JWT validation on the backend verifying signature keys against Google's certificates.
+Vibetube is event-based video streaming for Google Cloud workshops. A viewer
+enters an **event code** and lands in a showroom at `/e/CODE`. Each showroom is
+isolated: its own copy of the seed videos, its own uploads, its own upload
+window. Attendees upload the videos they built during the labs; nobody signs
+in except organisers.
+
+Live at **vibetube.dev** — GCP project `vibetube-streaming-platform`,
+`us-central1`.
+
+Seven showrooms in production as of this writing: `aicampTOR`, `GoogleDMV`,
+`aicampNYC`, `UBC`, `GoogleSVL`, `GoogleNYC`, `sandbox`.
 
 ---
 
-## 2. System Architecture
+## 2. How it is put together
 
-The project consists of three main decoupled services:
+One Cloud Run **service** (FastAPI serving both the API and the built React
+app) plus one Cloud Run **job** (FFmpeg transcoder). Cloud SQL PostgreSQL in
+the cloud, SQLite locally, chosen by `DATABASE_URL`.
 
 ```
-                  ┌─────────────────────────────────┐
-                  │          React Frontend         │
-                  │        (Cloud Run Service)      │
-                  └───────┬─────────────────┬───────┘
-                          │                 │
-             Fetch API    │                 │ Direct HLS Playback
-             (HTTP Proxy) │                 │
-                          ▼                 ▼
-                  ┌───────────────┐     ┌────────────────────────┐
-                  │FastAPI Backend│     │      GCS Bucket        │
-                  │  (Cloud Run   │     │vibetube-sandbox-public-│
-                  │   Service)    │     │        streams         │
-                  └──────┬──────┬─┘     └───────────▲────────────┘
-                         │      │                   │
-      Read/Write Metadata│      │Trigger Job        │ Upload
-                         ▼      ▼                   │ Transcoded Files
-                  ┌──────────┐ ┌──────────────────┐ │
-                  │Database  │ │FFmpeg Transcoder │─┘
-                  │(Cloud SQL│ │ (Cloud Run Job)  │
-                  │PostgreSQL│ └────────┬─────────┘
-                  └──────────┘          │
-                                        │ Download
-                                        ▼ Raw Upload
-                               ┌────────────────────────┐
-                               │       GCS Bucket       │
-                               │vibetube-sandbox-raw-   │
-                               │         videos         │
-                               └────────────────────────┘
+upload → PENDING → PROCESSING → [screen] → transcode → public bucket → READY
+                                   │
+                                   └──────→ BLOCKED  (nothing published)
 ```
 
-### Component Details
-*   **Frontend ([/frontend](file:///Users/ljhenne/Git/github.com/gca-americas/vibetube-streaming-platform/frontend))**:
-    *   **Tech Stack**: React 18, Vite, TypeScript, Tailwind CSS v4.
-    *   **Features**: Dark mode/light mode themes, responsive grid, dynamic play-on-hover video cards, HLS-ready media player, upload modal, and authentication forms.
-    *   **Auth**: Integrates with [firebase.ts](file:///Users/ljhenne/Git/github.com/gca-americas/vibetube-streaming-platform/frontend/src/services/firebase.ts). In local environments, if Firebase keys are absent, it shifts to `MockAuth` where entering any email signs you in (with mock tokens like `mock-token-emailprefix`).
-*   **Backend ([/backend](file:///Users/ljhenne/Git/github.com/gca-americas/vibetube-streaming-platform/backend))**:
-    *   **Tech Stack**: FastAPI, Uvicorn, SQLite (local) / PostgreSQL (production via `psycopg2`).
-    *   **Database Management**: Defined in [database.py](file:///Users/ljhenne/Git/github.com/gca-americas/vibetube-streaming-platform/backend/database.py). Connects dynamically based on `DATABASE_URL` env variable. Automatically performs migrations (adding `userId`) and populates seed data on startup.
-    *   **Auth Validation**: Handled in [auth.py](file:///Users/ljhenne/Git/github.com/gca-americas/vibetube-streaming-platform/backend/auth.py). Performs manual RS256 token verification, downloading public signing keys directly from Google. Validates custom `mock-token-` headers for local development.
-    *   **Transcoder Triggers**: In production, raw uploads are saved to GCS. The backend then invokes GCP Cloud Run Job client library to launch the transcoder with container overrides (source paths, destination paths, tokens).
-*   **Transcoder ([/transcoder](file:///Users/ljhenne/Git/github.com/gca-americas/vibetube-streaming-platform/transcoder))**:
-    *   **Tech Stack**: Python (using `google-cloud-storage`, `requests`, and `click`), FFmpeg system library.
-    *   **Execution Flow**: Defined in [job.py](file:///Users/ljhenne/Git/github.com/gca-americas/vibetube-streaming-platform/transcoder/job.py) and [converter.py](file:///Users/ljhenne/Git/github.com/gca-americas/vibetube-streaming-platform/transcoder/converter.py). Downloads the raw video from GCS, transcodes it into HLS streams of 480p, 720p, and 1080p, outputs a unified `master.m3u8` playlist, extracts a JPEG thumbnail at the video's midpoint, uploads the outputs back to the public GCS bucket, and sends a secure POST request to the backend callback endpoint with an `X-Transcoder-Token`.
+**Screening runs before the encode, and that ordering is load-bearing.** A
+rejected video costs no CPU and nothing it produced ever reaches the public
+bucket. It also means a blocked video was never transcoded, so there is
+nothing to simply un-hide — see the open item below.
+
+Two screens, two services:
+
+| Surface | Service | Where |
+|---|---|---|
+| The video | Gemini on Vertex | `transcoder/moderation.py`, inside the job |
+| Title, description, name, ad copy | Model Armor | `backend/moderation.py`, in-request |
 
 ---
 
-## 3. Google Cloud Platform (GCP) Deployment
+## 3. Things that will bite you
 
-A deployment orchestration script is provided in [deploy.sh](file:///Users/ljhenne/Git/github.com/gca-americas/vibetube-streaming-platform/deploy.sh). Running it provisions the infrastructure and deploys the services automatically.
+**Postgres folds unquoted identifiers.** `videoUrl` comes back as `videourl`
+in the cloud and `videoUrl` on SQLite. Read rows through `normalize_row` or
+`scalar`, never `row["videoUrl"]`. This shipped a 500 to production once, and
+local tests could not reproduce it.
 
-### Infrastructural Resources Configured:
-1.  **GCP Project Context**: Targeted to Project `vibetube-sandbox` in region `us-central1`.
-2.  **Storage (GCS)**:
-	*   `gs://vibetube-sandbox-raw-videos`: Private storage bucket for original video files.
-	*   `gs://vibetube-sandbox-public-streams`: Publicly readable bucket (`allUsers` has `roles/storage.objectViewer` permission) with custom CORS configs enabling Cross-Origin media streaming.
-3.  **Cloud SQL PostgreSQL Instance**:
-    *   Provisioned as `vibeflix-db-instance` running PostgreSQL 15 on a cost-efficient `db-f1-micro` machine.
-    *   Creates the application database. Credentials now live in `.env` (gitignored), not in `deploy.sh`.
-4.  **Artifact Registry**:
-	*   Docker repository named `vibetube-streaming-platform` storing images for all three services.
-5.  **Cloud Run Services / Jobs**:
-	*   `backend-service` (Cloud Run Service): Auto-connected to Cloud SQL using Unix sockets, set with the required database URL, bucket names, and transcoder secrets.
-	*   `frontend-service` (Cloud Run Service): Hosts the built frontend served by Nginx. The Nginx configuration templates translate `BACKEND_URL` on container start to route `/api` requests correctly.
-	*   `transcoder-job` (Cloud Run Job): Built from `/transcoder`. Initiated on-demand via the backend's GCP client library.
+**Building an image is not deploying it.** `deploy.sh` builds both images
+first, then updates Cloud Run. A deploy that dies in between leaves new images
+in the registry while the job keeps running the old digest, because Cloud Run
+pins `:latest` to a digest at deploy time. When verifying a deploy, check that
+it reached `-> Deploying Vibetube Cloud Run Service`, not that the build
+succeeded.
+
+**Event codes are case-insensitive to match, case-sensitive in storage.** The
+stored spelling is authoritative: handlers key videos, ads and presence off
+`event["code"]`, never off the path parameter, or `/e/googlenyc` resolves the
+event and then finds none of its content.
+
+**`dev.sh` leaves orphans if it is killed hard.** They hold ports 8000 and
+5173 and the next run fails on "address already in use". Check with
+`lsof -nP -iTCP:8000`.
 
 ---
 
-## 4. Next Steps
+## 4. Open items
 
-Here are the highest priority items that remain to be completed:
+**A blocked video cannot be released.** Screening sometimes rejects legitimate
+attendee work. The policy was rewritten to stop blocking videos for looking
+cinematic, which was the cause of every false positive so far, but there is no
+way to release one that was already blocked. It is not a status flip: the
+video was never transcoded, and `mark_video_blocked` clears `videoUrl`, which
+held the only pointer to the raw file. Raw files themselves survive in the
+raw-videos bucket, and the filenames are recoverable from Cloud Run job logs
+until those age out. Four attendee videos are in this state across three
+events.
 
-1.  **Firebase Production Configuration**:
-	*   Provide real Firebase credentials in the frontend config or secrets vault.
-	*   Configure `FIREBASE_PROJECT_ID` on the backend deployment so it verifies real JWT tokens instead of mock tokens in production.
-2.  **CI/CD Pipeline Setup**:
-	*   Automate deployment. Convert [deploy.sh](file:///Users/ljhenne/Git/github.com/gca-americas/vibetube-streaming-platform/deploy.sh) tasks into a GitHub Actions workflow or a Google Cloud Build trigger.
-3.  **Database Migration Management**:
-	*   Introduce a migration management framework (such as `Alembic` for SQLAlechemy/Python) instead of relying on custom raw SQL updates inside [database.py](file:///Users/ljhenne/Git/github.com/gca-americas/vibetube-streaming-platform/backend/database.py).
-4.  **Security & IAM Hardening**:
-    *   Transition Cloud Run service configurations in `deploy.sh` to use dedicated Service Accounts with least-privilege policies rather than default project compute accounts.
-    *   Move the credentials in `.env` to GCP Secret Manager. They are no longer hardcoded in `deploy.sh`, but `.env` is still plaintext on disk.
-5.  **Robust Transcoding Queue**:
-	*   Currently, calling a Cloud Run Job directly on upload is synchronous. For high traffic, implement a messaging/queue service (e.g., Pub/Sub or Celery) where uploads post a message and transcoder workers consume tasks asynchronously.
+**Seed videos cannot carry ads.** Ads attach by `projectId` and seeded rows
+have none, so no seed card can ever show the pre-roll or the AD badge. In a
+room that is mostly seeds, that caps ad coverage severely. Restoring project
+ids to the seed entries would fix it, and would ride along on the seed
+realignment that already runs in `init_db`.
+
+**`policycheck-1791290607` is a test video in `sandbox`** from verifying the
+screening policy. Safe to delete from the admin console.
+
+**Mentions only link on X.** A `@handle` in share text is plain text on
+LinkedIn, which creates a mention only through its own autocomplete.
+
+**No way to hop between rooms from inside one.** The banner used to list every
+other showroom, which put every code in front of anyone who reached any room.
+It now shows only the current room. Getting elsewhere means going back to the
+gate page.
+
+---
+
+## 5. Where things live
+
+| | |
+|---|---|
+| `backend/main.py` | API, upload ingest, ad submission, admin endpoints |
+| `backend/database.py` | schema, migrations, every query |
+| `backend/moderation.py` | Model Armor text screening |
+| `transcoder/job.py` | the transcode pipeline, screening gate |
+| `transcoder/moderation.py` | Gemini video screening and the policy |
+| `frontend/src/components/` | the whole UI |
+| `deploy.sh` | one script, idempotent, reads `.env` |
+| `dev.sh` | both halves locally — 5173 frontend, 8000 backend |
+
+The seed clips are **not** in this repo: they live in the public bucket under
+`seed/`, and `deploy.sh` uploads them from `SEED_MEDIA_DIR` only when one is
+missing. `backend/mockVideos.json` is the manifest.
