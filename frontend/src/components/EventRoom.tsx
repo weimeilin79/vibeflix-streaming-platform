@@ -11,11 +11,11 @@ import { Footer } from "./Footer";
 import { Sidebar } from "./Sidebar";
 import { CreditsModal } from "./CreditsModal";
 import {
-  EventNotFoundError, ShowroomFullError, VibeEvent, EventSummary,
-  fetchEvent, fetchEventVideos, fetchEvents, formatWindowTime, sendPresence,
+  EventNotFoundError, ShowroomFullError, VibeEvent,
+  fetchEvent, fetchEventVideos, formatWindowTime, sendPresence,
 } from "../lib/api";
 import { RoomFull } from "./RoomFull";
-import { navigate, roomPath, readVideoParam, syncVideoParam } from "../lib/router";
+import { navigate, readVideoParam, syncVideoParam } from "../lib/router";
 import { rememberCode } from "./GatePage";
 
 // How often to re-check videos that are still queued or transcoding.
@@ -101,19 +101,6 @@ export const EventRoom = ({ code, theme, onToggleTheme }: EventRoomProps) => {
   // Claim a seat on arrival, then renew it. Losing the seat mid-visit does not
   // eject anyone: the server never evicts an already-present viewer, so only
   // the initial claim can be refused.
-  // Other showrooms, for the chip switcher. Fetched once per room; the list
-  // changes far too rarely to justify polling it.
-  const [otherEvents, setOtherEvents] = useState<EventSummary[]>([]);
-  useEffect(() => {
-    let cancelled = false;
-    fetchEvents().then((all) => {
-      if (!cancelled) setOtherEvents(all.filter((e) => e.code !== code));
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [code]);
-
   const [presenceAttempt, setPresenceAttempt] = useState(0);
   useEffect(() => {
     let cancelled = false;
@@ -274,8 +261,9 @@ export const EventRoom = ({ code, theme, onToggleTheme }: EventRoomProps) => {
       <div className="relative z-10 flex-1 flex flex-col pt-16 lg:pl-[72px]">
         <div className="flex-1 flex flex-col px-4 md:px-6 py-5 w-full">
           {/* Context strip, in the position YouTube gives its filter chips.
-              The current showroom is the solid chip; the rest switch rooms.
-              Scrolls horizontally rather than wrapping once there are many. */}
+              Deliberately only this room: it used to list every other showroom
+              as a switcher, which put all their codes in front of anyone who
+              reached any one of them. */}
           <div className="flex items-center gap-2 mb-6 rise overflow-x-auto pb-1 -mx-1 px-1">
             <span className="shrink-0 px-3 py-1.5 rounded-full bg-fg text-stage text-xs font-bold whitespace-nowrap">
               {event?.name || "Loading showroom…"}
@@ -291,20 +279,6 @@ export const EventRoom = ({ code, theme, onToggleTheme }: EventRoomProps) => {
                 {notice.text}
               </span>
             )}
-
-            {otherEvents.length > 0 && (
-              <span className="shrink-0 w-px h-5 bg-hairline mx-1" aria-hidden="true" />
-            )}
-            {otherEvents.map((other) => (
-              <button
-                key={other.code}
-                onClick={() => navigate(roomPath(other.code))}
-                title={`Go to ${other.name}`}
-                className="shrink-0 px-3 py-1.5 rounded-full bg-overlay border border-hairline text-xs font-medium text-fg-muted hover:text-fg hover:border-vibe-purple/40 transition-all duration-150 cursor-pointer whitespace-nowrap"
-              >
-                {other.name}
-              </button>
-            ))}
           </div>
 
         <main className="flex-1">
